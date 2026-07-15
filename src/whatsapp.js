@@ -41,6 +41,17 @@ export class WhatsappClient {
     await this.sock.sendMessage(chatId, { text })
   }
 
+  async sendImage(chatId, imagePath, caption) {
+    if (!this.sock) throw new Error('WhatsApp no esta iniciado.')
+    await this.sock.sendPresenceUpdate('composing', chatId)
+    await sleep(1800)
+    await this.sock.sendPresenceUpdate('paused', chatId)
+    await this.sock.sendMessage(chatId, {
+      image: { url: imagePath },
+      caption,
+    })
+  }
+
   async handleMessages(event) {
     if (event.type !== 'notify') return
 

@@ -1,4 +1,6 @@
 import express from 'express'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { config, assertRequiredConfig } from './config.js'
 import { ConversationStore } from './state.js'
 import { getCatalog, createWhatsappOrder, findOrder } from './firebase.js'
@@ -6,6 +8,9 @@ import { understandMessage } from './gemini.js'
 import { WhatsappClient } from './whatsapp.js'
 
 assertRequiredConfig()
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const menuImagePath = path.resolve(__dirname, '..', 'assets', 'menu-burger-lab.png')
 
 let botEnabled = config.botEnabled
 const conversations = new ConversationStore()
@@ -26,6 +31,13 @@ const whatsapp = new WhatsappClient({
     const state = conversations.get(chatId)
 
     try {
+      if (isMenuRequest(text)) {
+        const caption = 'Claro, te paso nuestro menu. Cuando quieras pedir, mandame tu nombre, pedido, metodo de pago y si es recojo o envio.'
+        conversations.add(chatId, 'bot', caption)
+        await whatsapp.sendImage(chatId, menuImagePath, caption)
+        return
+      }
+
       const catalog = await getCatalog()
       const result = await understandMessage({
         message: text,
@@ -189,6 +201,15 @@ function phoneToChatId(phone) {
   const digits = String(phone).replace(/\D/g, '')
   if (!digits) return ''
   return `${digits}@s.whatsapp.net`
+}
+
+function isMenuRequest(text) {
+  const normalized = text
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase()
+
+  return /\b(menu|carta|precios|precio|hamburguesas|promos|promociones|catalogo)\b/.test(normalized)
 }
 
 function buildOrderSummary(orderInput) {
