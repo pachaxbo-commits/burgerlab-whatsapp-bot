@@ -1,0 +1,138 @@
+import admin from 'firebase-admin'
+import { config } from './config.js'
+
+if (!admin.apps.length) {
+  admin.initializeApp({
+    projectId: config.firebaseProjectId,
+  })
+}
+
+const db = admin.firestore()
+const FieldValue = admin.firestore.FieldValue
+
+export async function getCatalog() {
+  const basePath = db
+    .collection('restaurants')
+    .doc(config.restaurantId)
+    .collection('catalog')
+    .doc('current')
+
+  const [categoriesSnap, productsSnap] = await Promise.all([
+    basePath.collection('categories').orderBy('sortOrder', 'asc').get(),
+    basePath.collection('products').orderBy('sortOrder', 'asc').get(),
+  ])
+
+  const categories = categoriesSnap.docs
+    .map((doc) => ({ id: doc.id, ...doc.data() }))
+    .filter((category) => category.isActive !== false && category.isVisible !== false)
+
+  const products = productsSnap.docs
+    .map((doc) => ({ id: doc.id, ...doc.data() }))
+    .filter((product) => product.isActive !== false && product.isVisible !== false && product.availability !== 'soldout')
+
+  return { categories, products }
+}
+
+export async function createWhatsappOrder(input) {
+  const todayKey = getTodayKey()
+  const dayRef = db.collection('restaurants').doc(config.restaurantId).collection('days').doc(todayKey)
+  const orderRef = dayRef.collection('orders').doc()
+
+  const result = await db.runTransaction(async (transaction) => {
+    const daySnap = await transaction.get(dayRef)
+    const nextSequence = daySnap.exists ? Number(daySnap.data().sequence || 0) + 1 : 1
+    const displayNumber = `#${String(nextSequence).padStart(3, '0')}`
+    const now = FieldValue.serverTimestamp()
+
+    if (daySnap.exists) {
+      transaction.update(dayRef, {
+        sequence: nextSequence,
+        updatedAt: now,
+      })
+    } else {
+      transaction.set(dayRef, {
+        dayKey: todayKey,
+        restaurantId: config.restaurantId,
+        sequence: nextSequence,
+        createdAt: now,
+        updatedAt: now,
+      })
+    }
+
+    transaction.set(orderRef, {
+      id: orderRef.id,
+      sequence: nextSequence,
+      displayNumber,
+      createdAt: now,
+      updatedAt: now,
+      status: 'pending',
+      items: input.items,
+      total: input.total,
+      payment: buildPendingPayment(input.expectedPaymentMethod),
+      paymentStatus: 'pending',
+      paymentMethod: null,
+      expectedPaymentMethod: input.expectedPaymentMethod,
+      orderSource: 'whatsapp',
+      fulfillmentType: input.fulfillmentType,
+      tableInfo: '',
+      customerName: input.customerName,
+      customerPhone: input.customerPhone,
+      deliveryAddress: input.deliveryAddress || '',
+      createdBy: input.createdBy || 'whatsapp-bot',
+      whatsappChatId: input.chatId,
+    })
+
+    return { orderId: orderRef.id, displayNumber }
+  })
+
+  return result
+}
+
+export async function findOrder(orderId) {
+  const todayKey = getTodayKey()
+  const ref = db
+    .collection('restaurants')
+    .doc(config.restaurantId)
+    .collection('days')
+    .doc(todayKey)
+    .collection('orders')
+    .doc(orderId)
+
+  const snap = await ref.get()
+  if (snap.exists) return { id: snap.id, dayKey: todayKey, ...snap.data() }
+
+  const now = new Date()
+  for (let i = 1; i <= 7; i += 1) {
+    const day = new Date(now)
+    day.setDate(now.getDate() - i)
+    const dayKey = getTodayKey(day)
+    const pastRef = db
+      .collection('restaurants')
+      .doc(config.restaurantId)
+      .collection('days')
+      .doc(dayKey)
+      .collection('orders')
+      .doc(orderId)
+    const pastSnap = await pastRef.get()
+    if (pastSnap.exists) return { id: pastSnap.id, dayKey, ...pastSnap.data() }
+  }
+
+  return null
+}
+
+function buildPendingPayment(method) {
+  return {
+    method: method || 'cash',
+    cashAmount: 0,
+    qrAmount: 0,
+    cashReceived: 0,
+    change: 0,
+  }
+}
+
+function getTodayKey(now = new Date()) {
+  const year = now.getFullYear()
+  const month = String(now.getMonth() + 1).padStart(2, '0')
+  const day = String(now.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
