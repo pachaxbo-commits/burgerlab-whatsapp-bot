@@ -20,7 +20,7 @@ export const config = {
   closeHour: Number(process.env.BOT_CLOSE_HOUR || 23),
   personality:
     process.env.BOT_PERSONALITY ||
-    'Natural, formal y vendedor. Responde como restaurante atento, sin sonar robotico.',
+    'Natural, formal y vendedor. Habla como Burger Lab: amable, seguro, breve, con energia de restaurante. Ofrece ayuda sin sonar robotico ni exagerado.',
 }
 
 export function assertRequiredConfig() {

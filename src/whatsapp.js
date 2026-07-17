@@ -60,6 +60,7 @@ export class WhatsappClient {
       const chatId = message.key.remoteJid
       const text = extractText(message)
       if (!chatId || !text) continue
+      if (chatId.endsWith('@g.us')) continue
 
       await this.onMessage({ chatId, text, raw: message })
     }
