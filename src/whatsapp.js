@@ -4,6 +4,7 @@ import makeWASocket, {
   useMultiFileAuthState,
 } from '@whiskeysockets/baileys'
 import qrcode from 'qrcode-terminal'
+import QRCode from 'qrcode'
 import pino from 'pino'
 import { Boom } from '@hapi/boom'
 
@@ -72,6 +73,9 @@ export class WhatsappClient {
     if (qr) {
       console.log('Escanea este QR con WhatsApp:')
       qrcode.generate(qr, { small: true })
+      QRCode.toFile('bot-qr.png', qr, { width: 720, margin: 2 })
+        .then(() => console.log('QR guardado en bot-qr.png'))
+        .catch((error) => console.error('No se pudo guardar bot-qr.png:', error))
     }
 
     if (connection === 'open') {
