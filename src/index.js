@@ -8,7 +8,9 @@ import {
   createWhatsappOrder,
   findOrder,
   getWhatsappOrdersPendingConfirmationNotice,
+  getWhatsappDeliveryOrdersPendingDispatchNotice,
   markWhatsappConfirmationSent,
+  markWhatsappDispatchSent,
 } from './firebase.js'
 import { understandMessage } from './gemini.js'
 import { WhatsappClient } from './whatsapp.js'
@@ -166,7 +168,7 @@ app.post('/orders/:orderId/confirmed', requireToken, async (req, res) => {
 
   await whatsapp.sendText(
     chatId,
-    `Tu pedido ${order.displayNumber || ''} ya fue confirmado. Sale aproximadamente en ${delayMinutes} minutos.`,
+    buildConfirmationMessage(delayMinutes),
   )
   await markWhatsappConfirmationSent(order)
 
@@ -266,9 +268,21 @@ function startConfirmationNoticePolling() {
 
         await whatsapp.sendText(
           chatId,
-          `Tu pedido ${order.displayNumber || ''} ya fue confirmado. Sale aproximadamente en ${delayMinutes} minutos.`,
+          buildConfirmationMessage(delayMinutes),
         )
         await markWhatsappConfirmationSent(order)
+      }
+
+      const dispatchOrders = await getWhatsappDeliveryOrdersPendingDispatchNotice()
+      for (const order of dispatchOrders) {
+        const chatId = order.whatsappChatId || phoneToChatId(order.customerPhone)
+        if (!chatId) continue
+
+        await whatsapp.sendText(
+          chatId,
+          'Tu pedido ya salio para delivery. Por favor estate atento al telefono para recibirlo. Gracias por pedir en Burger Lab.',
+        )
+        await markWhatsappDispatchSent(order)
       }
     } catch (error) {
       console.error('Error revisando confirmaciones pendientes:', error)
@@ -279,6 +293,10 @@ function startConfirmationNoticePolling() {
 
   setInterval(check, 5000)
   setTimeout(check, 1500)
+}
+
+function buildConfirmationMessage(delayMinutes) {
+  return `Listo, tu pedido ya fue confirmado. Sale aproximadamente en ${delayMinutes} minutos.`
 }
 
 function buildOrderSummary(orderInput) {

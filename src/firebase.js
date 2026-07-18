@@ -138,6 +138,27 @@ export async function getWhatsappOrdersPendingConfirmationNotice() {
     .filter((order) => order.whatsappChatId || order.customerPhone)
 }
 
+export async function getWhatsappDeliveryOrdersPendingDispatchNotice() {
+  const todayKey = getTodayKey()
+  const snap = await db
+    .collection('restaurants')
+    .doc(config.restaurantId)
+    .collection('days')
+    .doc(todayKey)
+    .collection('orders')
+    .where('status', '==', 'delivered')
+    .limit(50)
+    .get()
+
+  return snap.docs
+    .map((doc) => ({ id: doc.id, dayKey: todayKey, ...doc.data() }))
+    .filter((order) => order.orderSource === 'whatsapp')
+    .filter((order) => order.fulfillmentType === 'delivery')
+    .filter((order) => !order.whatsappDispatchSentAt)
+    .filter((order) => isRecentTimestamp(order.deliveredAt, 15 * 60 * 1000))
+    .filter((order) => order.whatsappChatId || order.customerPhone)
+}
+
 export async function markWhatsappConfirmationSent(order) {
   await db
     .collection('restaurants')
@@ -152,6 +173,20 @@ export async function markWhatsappConfirmationSent(order) {
     })
 }
 
+export async function markWhatsappDispatchSent(order) {
+  await db
+    .collection('restaurants')
+    .doc(config.restaurantId)
+    .collection('days')
+    .doc(order.dayKey || getTodayKey())
+    .collection('orders')
+    .doc(order.id)
+    .update({
+      whatsappDispatchSentAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    })
+}
+
 function buildPendingPayment(method) {
   return {
     method: method || 'cash',
@@ -160,6 +195,11 @@ function buildPendingPayment(method) {
     cashReceived: 0,
     change: 0,
   }
+}
+
+function isRecentTimestamp(value, maxAgeMs) {
+  const millis = value?.toMillis ? value.toMillis() : new Date(value || 0).getTime()
+  return Number.isFinite(millis) && Date.now() - millis <= maxAgeMs
 }
 
 function getTodayKey(now = new Date()) {
