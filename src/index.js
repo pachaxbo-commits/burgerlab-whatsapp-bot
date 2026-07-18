@@ -239,7 +239,15 @@ function isRestaurantLocationRequest(text) {
     .replace(/\p{Diacritic}/gu, '')
     .toLowerCase()
 
-  return /\b(ubicacion|direccion)\b/.test(normalized) || /\b(donde estan|donde queda|como llego|mandame la ubicacion|pasa ubicacion)\b/.test(normalized)
+  const isDeliveryContext = /\b(envio|delivery|pedido|pedir|confirmo|mi ubicacion|mi direccion|te mande|mande|mandé)\b/.test(normalized)
+  if (isDeliveryContext) return false
+
+  return (
+    /\b(donde estan|donde queda|como llego)\b/.test(normalized) ||
+    /\b(ubicacion|direccion)\b.*\b(local|restaurante|burger lab|burguer lab)\b/.test(normalized) ||
+    /\b(local|restaurante|burger lab|burguer lab)\b.*\b(ubicacion|direccion)\b/.test(normalized) ||
+    /\b(mandame|pasa|pasame|envia|enviame)\b.*\b(ubicacion|direccion)\b.*\b(local|restaurante)\b/.test(normalized)
+  )
 }
 
 function startConfirmationNoticePolling() {
