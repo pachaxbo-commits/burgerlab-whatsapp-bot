@@ -53,6 +53,21 @@ export class WhatsappClient {
     })
   }
 
+  async sendLocation(chatId, { latitude, longitude, name, address }) {
+    if (!this.sock) throw new Error('WhatsApp no esta iniciado.')
+    await this.sock.sendPresenceUpdate('composing', chatId)
+    await sleep(1200)
+    await this.sock.sendPresenceUpdate('paused', chatId)
+    await this.sock.sendMessage(chatId, {
+      location: {
+        degreesLatitude: latitude,
+        degreesLongitude: longitude,
+        name,
+        address,
+      },
+    })
+  }
+
   async handleMessages(event) {
     if (event.type !== 'notify') return
 

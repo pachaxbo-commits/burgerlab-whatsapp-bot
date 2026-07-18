@@ -3,7 +3,13 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { config, assertRequiredConfig } from './config.js'
 import { ConversationStore } from './state.js'
-import { getCatalog, createWhatsappOrder, findOrder } from './firebase.js'
+import {
+  getCatalog,
+  createWhatsappOrder,
+  findOrder,
+  getWhatsappOrdersPendingConfirmationNotice,
+  markWhatsappConfirmationSent,
+} from './firebase.js'
 import { understandMessage } from './gemini.js'
 import { WhatsappClient } from './whatsapp.js'
 
@@ -35,6 +41,19 @@ const whatsapp = new WhatsappClient({
         const caption = 'Claro, te paso nuestro menu. Cuando quieras pedir, mandame tu nombre, pedido, metodo de pago y si es recojo o envio.'
         conversations.add(chatId, 'bot', caption)
         await whatsapp.sendImage(chatId, menuImagePath, caption)
+        return
+      }
+
+      if (isRestaurantLocationRequest(text)) {
+        const reply = 'Claro, te envio la ubicacion de Burger Lab.'
+        conversations.add(chatId, 'bot', reply)
+        await whatsapp.sendText(chatId, reply)
+        await whatsapp.sendLocation(chatId, {
+          latitude: config.restaurantLatitude,
+          longitude: config.restaurantLongitude,
+          name: config.businessName,
+          address: config.restaurantAddress,
+        })
         return
       }
 
@@ -98,6 +117,7 @@ const whatsapp = new WhatsappClient({
 })
 
 await whatsapp.start()
+startConfirmationNoticePolling()
 
 const app = express()
 app.use(express.json())
@@ -148,6 +168,7 @@ app.post('/orders/:orderId/confirmed', requireToken, async (req, res) => {
     chatId,
     `Tu pedido ${order.displayNumber || ''} ya fue confirmado. Sale aproximadamente en ${delayMinutes} minutos.`,
   )
+  await markWhatsappConfirmationSent(order)
 
   res.json({ ok: true })
 })
@@ -210,6 +231,46 @@ function isMenuRequest(text) {
     .toLowerCase()
 
   return /\b(menu|carta|precios|precio|hamburguesas|promos|promociones|catalogo)\b/.test(normalized)
+}
+
+function isRestaurantLocationRequest(text) {
+  const normalized = text
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase()
+
+  return /\b(ubicacion|direccion)\b/.test(normalized) || /\b(donde estan|donde queda|como llego|mandame la ubicacion|pasa ubicacion)\b/.test(normalized)
+}
+
+function startConfirmationNoticePolling() {
+  let isChecking = false
+
+  const check = async () => {
+    if (isChecking || !botEnabled || !whatsapp.connected) return
+    isChecking = true
+
+    try {
+      const orders = await getWhatsappOrdersPendingConfirmationNotice()
+      for (const order of orders) {
+        const delayMinutes = Number(order.estimatedDelay || config.defaultDelayMinutes)
+        const chatId = order.whatsappChatId || phoneToChatId(order.customerPhone)
+        if (!chatId) continue
+
+        await whatsapp.sendText(
+          chatId,
+          `Tu pedido ${order.displayNumber || ''} ya fue confirmado. Sale aproximadamente en ${delayMinutes} minutos.`,
+        )
+        await markWhatsappConfirmationSent(order)
+      }
+    } catch (error) {
+      console.error('Error revisando confirmaciones pendientes:', error)
+    } finally {
+      isChecking = false
+    }
+  }
+
+  setInterval(check, 5000)
+  setTimeout(check, 1500)
 }
 
 function buildOrderSummary(orderInput) {

@@ -120,6 +120,38 @@ export async function findOrder(orderId) {
   return null
 }
 
+export async function getWhatsappOrdersPendingConfirmationNotice() {
+  const todayKey = getTodayKey()
+  const snap = await db
+    .collection('restaurants')
+    .doc(config.restaurantId)
+    .collection('days')
+    .doc(todayKey)
+    .collection('orders')
+    .where('status', '==', 'preparing')
+    .limit(50)
+    .get()
+
+  return snap.docs
+    .map((doc) => ({ id: doc.id, dayKey: todayKey, ...doc.data() }))
+    .filter((order) => order.orderSource === 'whatsapp' && !order.whatsappConfirmationSentAt)
+    .filter((order) => order.whatsappChatId || order.customerPhone)
+}
+
+export async function markWhatsappConfirmationSent(order) {
+  await db
+    .collection('restaurants')
+    .doc(config.restaurantId)
+    .collection('days')
+    .doc(order.dayKey || getTodayKey())
+    .collection('orders')
+    .doc(order.id)
+    .update({
+      whatsappConfirmationSentAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    })
+}
+
 function buildPendingPayment(method) {
   return {
     method: method || 'cash',
