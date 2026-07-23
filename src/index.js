@@ -71,7 +71,7 @@ const whatsapp = new WhatsappClient({
         conversations.setLastOrder(chatId, created.orderId)
 
         const reply = [
-          `Perfecto, registre tu pedido ${created.displayNumber}.`,
+          'Perfecto, registre tu pedido.',
           'En caja lo van a confirmar y te aviso el tiempo exacto de salida.',
         ].join('\n')
 
@@ -88,8 +88,18 @@ const whatsapp = new WhatsappClient({
         return
       }
 
-      if (result.intent === 'order_ready' && result.items.length > 0) {
-        const orderInput = buildOrderInput({ result, chatId })
+      const mergedResult = mergeOrderDraft(state.orderDraft, result, text)
+      conversations.setOrderDraft(chatId, mergedResult)
+      const missingFields = getMissingOrderFields(mergedResult)
+      if (mergedResult.items.length > 0 && missingFields.length > 0) {
+        const reply = buildMissingFieldsReply(missingFields)
+        conversations.add(chatId, 'bot', reply)
+        await whatsapp.sendText(chatId, reply)
+        return
+      }
+
+      if (mergedResult.items.length > 0 && missingFields.length === 0) {
+        const orderInput = buildOrderInput({ result: mergedResult, chatId })
         if (orderInput.fulfillmentType === 'delivery' && orderInput.deliveryQuoteStatus === 'missing_location') {
           const reply = 'Para cotizar el envio automaticamente necesito que me mandes tu ubicacion de WhatsApp. Asi calculo la distancia y te paso el total con envio.'
           conversations.add(chatId, 'bot', reply)
@@ -185,6 +195,55 @@ app.listen(config.port, () => {
   console.log(`Bot API escuchando en http://localhost:${config.port}`)
 })
 
+function mergeOrderDraft(previous, result, text) {
+  const inferred = inferFieldsFromText(text)
+  return {
+    ...result,
+    items: result.items.length ? result.items : previous?.items ?? [],
+    customerName: result.customerName || inferred.customerName || previous?.customerName || '',
+    customerPhone: result.customerPhone || previous?.customerPhone || '',
+    paymentMethod: result.paymentMethod || inferred.paymentMethod || previous?.paymentMethod || null,
+    fulfillmentType: result.fulfillmentType || previous?.fulfillmentType || null,
+    deliveryAddress: result.deliveryAddress || previous?.deliveryAddress || '',
+  }
+}
+
+function inferFieldsFromText(text) {
+  const normalized = String(text || '')
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase()
+  const paymentMethod = /\bqr\b/.test(normalized)
+    ? 'qr'
+    : /\b(efectivo|cash)\b/.test(normalized)
+      ? 'cash'
+      : /\b(mixto|ambos)\b/.test(normalized)
+        ? 'mixed'
+        : null
+  const possibleName = String(text || '')
+    .split(',')
+    .map((part) => part.trim())
+    .find((part) => /^[\p{L}]{3,}(?:\s+[\p{L}]{3,})?$/u.test(part) && !/qr|efectivo|mixto/i.test(part))
+
+  return {
+    paymentMethod,
+    customerName: possibleName || '',
+  }
+}
+
+function getMissingOrderFields(result) {
+  const missing = []
+  if (!result.customerName) missing.push('tu nombre')
+  if (!result.paymentMethod) missing.push('tu metodo de pago')
+  if (!result.fulfillmentType) missing.push('si es recojo o envio')
+  if (result.fulfillmentType === 'delivery' && !result.deliveryAddress) missing.push('tu ubicacion de WhatsApp')
+  return missing
+}
+
+function buildMissingFieldsReply(missingFields) {
+  return `Ya tengo el pedido avanzado. Para terminar de registrarlo, me falta: ${missingFields.join(', ')}.`
+}
+
 function buildOrderInput({ result, chatId }) {
   const items = result.items.map((item) => {
     const extrasTotal = item.extras.reduce((sum, extra) => sum + Number(extra.price || 0), 0)
@@ -209,7 +268,7 @@ function buildOrderInput({ result, chatId }) {
       ? buildDeliveryQuote(result.deliveryAddress)
       : null
   const deliveryFee = deliveryQuote?.fee ?? 0
-  const total = productSubtotal + deliveryFee
+  const total = productSubtotal
 
   return {
     items,
@@ -370,7 +429,7 @@ function startConfirmationNoticePolling() {
 
         await whatsapp.sendText(
           chatId,
-          'Tu pedido ya salio para delivery. Por favor estate atento al telefono para recibirlo. Gracias por pedir en Burger Lab.',
+          'Tu pedido ya salio para delivery. Por favor, este atento al telefono para recibirlo. Gracias por pedir en Burger Lab.',
         )
         await markWhatsappDispatchSent(order)
       }
@@ -413,9 +472,9 @@ function buildOrderSummary(orderInput) {
     'Te paso el resumen de tu pedido:',
     `Nombre: ${orderInput.customerName}`,
     ...itemLines,
-    `Productos: Bs ${orderInput.productSubtotal ?? orderInput.total}`,
+    `Pedido: Bs ${orderInput.productSubtotal ?? orderInput.total}`,
     ...deliveryLine,
-    `Total: Bs ${orderInput.total}`,
+    `Total del pedido: Bs ${orderInput.total}`,
     `Pago: ${paymentLabel}`,
   ].join('\n')
 }
@@ -427,7 +486,7 @@ function buildDeliverySummaryLines(orderInput) {
 
   if (orderInput.deliveryQuoteStatus === 'quoted') {
     lines.push(`Distancia aprox.: ${orderInput.deliveryDistanceKm} km`)
-    lines.push(`Costo de envio: Bs ${orderInput.deliveryFee}`)
+    lines.push(`Envio estimado: Bs ${orderInput.deliveryFee} (se paga al delivery)`)
     lines.push('Nota: el envio puede subir por clima, ruta, subida, trafico o condiciones especiales.')
     return lines
   }

@@ -161,6 +161,7 @@ export async function getWhatsappDeliveryOrdersPendingDispatchNotice() {
     .filter((order) => order.fulfillmentType === 'delivery')
     .filter((order) => !order.whatsappDispatchSentAt)
     .filter((order) => isRecentTimestamp(order.deliveredAt, 15 * 60 * 1000))
+    .filter((order) => isWithinDispatchNoticeWindow(order))
     .filter((order) => order.whatsappChatId || order.customerPhone)
 }
 
@@ -205,6 +206,14 @@ function buildPendingPayment(method) {
 function isRecentTimestamp(value, maxAgeMs) {
   const millis = value?.toMillis ? value.toMillis() : new Date(value || 0).getTime()
   return Number.isFinite(millis) && Date.now() - millis <= maxAgeMs
+}
+
+function isWithinDispatchNoticeWindow(order) {
+  const createdAt = order.createdAt?.toMillis ? order.createdAt.toMillis() : new Date(order.createdAt || 0).getTime()
+  const deliveredAt = order.deliveredAt?.toMillis ? order.deliveredAt.toMillis() : new Date(order.deliveredAt || 0).getTime()
+  const delayMinutes = Number(order.estimatedDelay || 10)
+  const graceMs = 10 * 60 * 1000
+  return Number.isFinite(createdAt) && Number.isFinite(deliveredAt) && deliveredAt <= createdAt + delayMinutes * 60 * 1000 + graceMs
 }
 
 function getTodayKey(now = new Date()) {

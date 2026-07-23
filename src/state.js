@@ -9,6 +9,7 @@ export class ConversationStore {
         messages: [],
         lastOrderId: null,
         pendingOrder: null,
+        orderDraft: null,
       })
     }
     return this.byChatId.get(chatId)
@@ -25,10 +26,16 @@ export class ConversationStore {
     const state = this.get(chatId)
     state.lastOrderId = orderId
     state.pendingOrder = null
+    state.orderDraft = null
   }
 
   setPendingOrder(chatId, orderInput, summary) {
     const state = this.get(chatId)
     state.pendingOrder = { orderInput, summary }
+  }
+
+  setOrderDraft(chatId, draft) {
+    const state = this.get(chatId)
+    state.orderDraft = draft
   }
 }
