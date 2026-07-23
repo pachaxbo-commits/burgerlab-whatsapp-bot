@@ -28,7 +28,8 @@ const botVersion = process.env.RAILWAY_GIT_COMMIT_SHA?.slice(0, 7) || 'local'
 
 let botEnabled = config.botEnabled
 let acceptingOrders = getSettings().acceptingOrders
-const conversations = new ConversationStore()
+const conversations = new ConversationStore(config.conversationStatePath)
+await conversations.load()
 let catalogCache = null
 let catalogCacheAt = 0
 const fallbackCatalog = {
@@ -92,9 +93,11 @@ const whatsapp = new WhatsappClient({
         const inferred = inferFieldsFromText(text)
         if (inferred.deliveryAddress) {
           state.awaitingPaymentProof.orderInput.deliveryAddress = inferred.deliveryAddress
+          conversations.scheduleSave()
         }
         if (isPaymentProofMessage(text)) {
           state.awaitingPaymentProof.proofReceived = true
+          conversations.scheduleSave()
         }
 
         if (state.awaitingPaymentProof.orderInput.fulfillmentType === 'delivery' && !state.awaitingPaymentProof.orderInput.deliveryAddress) {
@@ -127,6 +130,7 @@ const whatsapp = new WhatsappClient({
 
         if (isCancelText(text)) {
           state.awaitingPaymentProof = null
+          conversations.scheduleSave()
           const reply = 'Sin problema. Dejamos el pago pendiente; si quieres continuar, me mandas el comprobante o actualizamos el metodo de pago.'
           conversations.add(chatId, 'bot', reply)
           await whatsapp.sendText(chatId, reply)
@@ -160,6 +164,7 @@ const whatsapp = new WhatsappClient({
 
       if (state.pendingOrder && isCancelText(text)) {
         state.pendingOrder = null
+        conversations.scheduleSave()
         const reply = 'Sin problema. Lo dejamos pendiente; si quieres cambiar algo, mandame el pedido actualizado y lo armamos bien.'
         conversations.add(chatId, 'bot', reply)
         await whatsapp.sendText(chatId, reply)
@@ -309,6 +314,7 @@ const whatsapp = new WhatsappClient({
 
       if (result.intent === 'cancel_order' && state.pendingOrder) {
         state.pendingOrder = null
+        conversations.scheduleSave()
         const reply = 'Sin problema. Lo dejamos pendiente; si quieres cambiar algo, mandame el pedido actualizado y lo armamos bien.'
         conversations.add(chatId, 'bot', reply)
         await whatsapp.sendText(chatId, reply)
