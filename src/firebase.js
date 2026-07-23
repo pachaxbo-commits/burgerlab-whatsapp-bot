@@ -247,8 +247,9 @@ export async function getWhatsappDeliveryOrdersPendingDispatchNotice() {
     .filter((order) => order.orderSource === 'whatsapp')
     .filter((order) => order.fulfillmentType === 'delivery')
     .filter((order) => !order.whatsappDispatchSentAt)
+    .filter((order) => !order.suppressWhatsappDispatchNotice)
     .filter((order) => isRecentTimestamp(order.deliveredAt, 15 * 60 * 1000))
-    .filter((order) => isWithinDispatchNoticeWindow(order))
+    .filter((order) => order.forceWhatsappDispatchNotice || isWithinDispatchNoticeWindow(order))
     .filter((order) => order.whatsappChatId || order.customerPhone)
 }
 
