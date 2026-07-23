@@ -404,9 +404,6 @@ const whatsapp = new WhatsappClient({
   },
 })
 
-await whatsapp.start()
-startConfirmationNoticePolling()
-
 const app = express()
 app.use(express.json())
 app.use((req, res, next) => {
@@ -526,9 +523,28 @@ app.post('/orders/:orderId/confirmed', requireToken, async (req, res) => {
   res.json({ ok: true })
 })
 
-app.listen(config.port, () => {
+await whatsapp.start()
+startConfirmationNoticePolling()
+
+const server = app.listen(config.port, () => {
   console.log(`Bot API escuchando en http://localhost:${config.port}`)
 })
+
+process.on('SIGTERM', () => shutdown('SIGTERM'))
+process.on('SIGINT', () => shutdown('SIGINT'))
+process.on('unhandledRejection', (error) => {
+  console.error('Promesa no manejada en el bot:', error)
+})
+
+function shutdown(signal) {
+  console.log(`Cerrando bot por ${signal}...`)
+  server.close(() => {
+    console.log('Servidor HTTP cerrado correctamente.')
+    process.exit(0)
+  })
+
+  setTimeout(() => process.exit(0), 5000).unref()
+}
 
 async function requestQrPaymentProof(chatId, orderInput, summary) {
   conversations.setAwaitingPaymentProof(chatId, orderInput, summary)
