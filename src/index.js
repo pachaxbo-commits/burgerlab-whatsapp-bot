@@ -1,8 +1,10 @@
 import express from 'express'
+import fs from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { config, assertRequiredConfig } from './config.js'
 import { ConversationStore } from './state.js'
+import { getSettings, loadSettings, updateSettings } from './settings.js'
 import {
   getCatalog,
   createWhatsappOrder,
@@ -16,6 +18,7 @@ import { understandMessage } from './gemini.js'
 import { WhatsappClient } from './whatsapp.js'
 
 assertRequiredConfig()
+await loadSettings()
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const menuImagePath = path.resolve(__dirname, '..', 'assets', 'menu-burger-lab.png')
@@ -23,7 +26,7 @@ const deliveryTariffImagePath = path.resolve(__dirname, '..', 'assets', 'deliver
 const paymentQrImagePath = path.resolve(__dirname, '..', 'assets', 'qr-pago-burger-lab.png')
 
 let botEnabled = config.botEnabled
-let acceptingOrders = true
+let acceptingOrders = getSettings().acceptingOrders
 const conversations = new ConversationStore()
 let catalogCache = null
 let catalogCacheAt = 0
@@ -32,10 +35,14 @@ const whatsapp = new WhatsappClient({
   onMessage: async ({ chatId, text }) => {
     if (!botEnabled) return
 
+    const settings = getSettings()
+
+    if (!settings.autoRepliesEnabled) return
+
     if (!acceptingOrders) {
       await whatsapp.sendText(
         chatId,
-        'En este momento no estamos recibiendo pedidos por WhatsApp. Por favor intenta nuevamente mas tarde.',
+        settings.pausedOrdersMessage,
       )
       return
     }
@@ -43,7 +50,7 @@ const whatsapp = new WhatsappClient({
     if (!isWithinBusinessHours()) {
       await whatsapp.sendText(
         chatId,
-        `Gracias por escribir a ${config.businessName}. Nuestro horario de pedidos por WhatsApp es de 5:00 pm a 11:00 pm. Te esperamos en ese horario para atenderte con gusto.`,
+        settings.closedMessage,
       )
       return
     }
@@ -293,7 +300,7 @@ const whatsapp = new WhatsappClient({
 
       if (result.intent === 'human_help') {
         await notifyHumanSupport(chatId, text)
-        const reply = 'Dame un momento, por favor. Voy a pedir apoyo para confirmarte eso correctamente.'
+        const reply = getSettings().humanHelpMessage
         conversations.add(chatId, 'bot', reply)
         await whatsapp.sendText(chatId, reply)
         return
@@ -375,8 +382,45 @@ app.get('/health', (_req, res) => {
     ok: true,
     botEnabled,
     acceptingOrders,
+    autoRepliesEnabled: getSettings().autoRepliesEnabled,
     whatsappConnected: whatsapp.connected,
   })
+})
+
+app.get('/settings', requireToken, (_req, res) => {
+  res.json({ ok: true, settings: getSettings() })
+})
+
+app.post('/settings', requireToken, async (req, res) => {
+  const settings = await updateSettings(req.body || {})
+  acceptingOrders = settings.acceptingOrders
+  res.json({ ok: true, settings })
+})
+
+app.get('/whatsapp/groups', requireToken, async (_req, res) => {
+  const groups = await whatsapp.listGroups()
+  res.json({ ok: true, groups })
+})
+
+app.get('/whatsapp/qr', requireToken, async (_req, res) => {
+  try {
+    const qrBuffer = await fs.readFile(path.resolve('bot-qr.png'))
+    res.json({
+      ok: true,
+      connected: whatsapp.connected,
+      qrDataUrl: `data:image/png;base64,${qrBuffer.toString('base64')}`,
+    })
+  } catch {
+    res.status(404).json({ ok: false, connected: whatsapp.connected, error: 'No hay QR disponible. Cierra sesion o reconecta WhatsApp para generar uno nuevo.' })
+  }
+})
+
+app.post('/whatsapp/logout', requireToken, async (_req, res) => {
+  await whatsapp.logout()
+  await fs.rm(path.resolve('auth_info'), { recursive: true, force: true }).catch(() => undefined)
+  await fs.rm(path.resolve('bot-qr.png'), { force: true }).catch(() => undefined)
+  setTimeout(() => void whatsapp.start(), 1500)
+  res.json({ ok: true })
 })
 
 app.post('/bot/on', requireToken, (_req, res) => {
@@ -391,11 +435,13 @@ app.post('/bot/off', requireToken, (_req, res) => {
 
 app.post('/orders/accepting/on', requireToken, (_req, res) => {
   acceptingOrders = true
+  void updateSettings({ acceptingOrders: true })
   res.json({ ok: true, acceptingOrders })
 })
 
 app.post('/orders/accepting/off', requireToken, (_req, res) => {
   acceptingOrders = false
+  void updateSettings({ acceptingOrders: false })
   res.json({ ok: true, acceptingOrders })
 })
 
@@ -439,7 +485,7 @@ async function requestQrPaymentProof(chatId, orderInput, summary) {
     '',
     'Te paso el QR del restaurante para pagar el pedido.',
     `Total a pagar por QR: Bs ${orderInput.total}.`,
-    'Cuando envies el comprobante por este chat, caja revisara el pago y te avisare el tiempo de salida.',
+    getSettings().qrPaymentMessage,
     deliveryLine,
   ].join('\n')
 
@@ -448,10 +494,7 @@ async function requestQrPaymentProof(chatId, orderInput, summary) {
 }
 
 async function sendDeliveryPricingInfo(chatId) {
-  const caption = [
-    'Te paso el tarifario de delivery y la ubicacion de Burger Lab para que puedas estimar el envio.',
-    'El costo final puede variar por zona, clima, subida, ruta o disponibilidad del repartidor.',
-  ].join('\n')
+  const caption = getSettings().deliveryPricingMessage
 
   conversations.add(chatId, 'bot', caption)
   await whatsapp.sendImage(chatId, deliveryTariffImagePath, caption)
@@ -519,13 +562,15 @@ async function notifyDeliveryGroupOrderConfirmed(order, delayMinutes) {
 }
 
 async function resolveDeliveryGroupChatId() {
-  if (config.deliveryGroupId) return config.deliveryGroupId
-  return whatsapp.findGroupIdBySubject(config.deliveryGroupName)
+  const settings = getSettings()
+  if (settings.deliveryGroupId) return settings.deliveryGroupId
+  return whatsapp.findGroupIdBySubject(settings.deliveryGroupName)
 }
 
 async function resolveOwnerAlertChatId() {
-  if (config.ownerAlertChatId) return config.ownerAlertChatId
-  return whatsapp.findGroupIdBySubject(config.ownerAlertGroupName)
+  const settings = getSettings()
+  if (settings.ownerAlertChatId) return settings.ownerAlertChatId
+  return whatsapp.findGroupIdBySubject(settings.ownerAlertGroupName)
 }
 
 async function getCachedCatalog() {

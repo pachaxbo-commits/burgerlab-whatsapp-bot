@@ -81,6 +81,24 @@ export class WhatsappClient {
     return group?.id || ''
   }
 
+  async listGroups() {
+    if (!this.sock) return []
+    const groups = await this.sock.groupFetchAllParticipating().catch(() => ({}))
+    return Object.values(groups)
+      .map((group) => ({
+        id: group.id,
+        name: group.subject,
+        participants: Array.isArray(group.participants) ? group.participants.length : 0,
+      }))
+      .sort((left, right) => normalizeText(left.name).localeCompare(normalizeText(right.name)))
+  }
+
+  async logout() {
+    if (!this.sock) return
+    await this.sock.logout().catch(() => undefined)
+    this.connected = false
+  }
+
   async handleMessages(event) {
     if (event.type !== 'notify') return
 

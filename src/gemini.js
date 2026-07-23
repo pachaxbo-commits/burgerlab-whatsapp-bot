@@ -1,6 +1,7 @@
 import { GoogleGenAI } from '@google/genai'
 import { z } from 'zod'
 import { config } from './config.js'
+import { getSettings } from './settings.js'
 
 const ai = new GoogleGenAI({ apiKey: config.geminiApiKey })
 
@@ -132,7 +133,7 @@ function buildPrompt({ message, conversation, catalog }) {
 
   return `
 Eres el bot de WhatsApp de ${config.businessName}.
-Personalidad: ${config.personality}
+Personalidad: ${getSettings().personality || config.personality}
 
 Objetivo:
 - Responder natural, corto y claro.
