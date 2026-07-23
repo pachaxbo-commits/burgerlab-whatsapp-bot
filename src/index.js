@@ -23,6 +23,7 @@ const deliveryTariffImagePath = path.resolve(__dirname, '..', 'assets', 'deliver
 const paymentQrImagePath = path.resolve(__dirname, '..', 'assets', 'qr-pago-burger-lab.png')
 
 let botEnabled = config.botEnabled
+let acceptingOrders = true
 const conversations = new ConversationStore()
 let catalogCache = null
 let catalogCacheAt = 0
@@ -30,6 +31,14 @@ let catalogCacheAt = 0
 const whatsapp = new WhatsappClient({
   onMessage: async ({ chatId, text }) => {
     if (!botEnabled) return
+
+    if (!acceptingOrders) {
+      await whatsapp.sendText(
+        chatId,
+        'En este momento no estamos recibiendo pedidos por WhatsApp. Por favor intenta nuevamente mas tarde.',
+      )
+      return
+    }
 
     if (!isWithinBusinessHours()) {
       await whatsapp.sendText(
@@ -316,6 +325,7 @@ app.get('/health', (_req, res) => {
   res.json({
     ok: true,
     botEnabled,
+    acceptingOrders,
     whatsappConnected: whatsapp.connected,
   })
 })
@@ -328,6 +338,16 @@ app.post('/bot/on', requireToken, (_req, res) => {
 app.post('/bot/off', requireToken, (_req, res) => {
   botEnabled = false
   res.json({ ok: true, botEnabled })
+})
+
+app.post('/orders/accepting/on', requireToken, (_req, res) => {
+  acceptingOrders = true
+  res.json({ ok: true, acceptingOrders })
+})
+
+app.post('/orders/accepting/off', requireToken, (_req, res) => {
+  acceptingOrders = false
+  res.json({ ok: true, acceptingOrders })
 })
 
 app.post('/orders/:orderId/confirmed', requireToken, async (req, res) => {
