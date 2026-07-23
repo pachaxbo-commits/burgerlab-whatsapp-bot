@@ -115,7 +115,7 @@ const whatsapp = new WhatsappClient({
             qrProofReceived: true,
             paymentReviewNote: 'Cliente envio comprobante QR por WhatsApp. Caja debe revisarlo antes de confirmar pago.',
           }
-          const created = await createWhatsappOrder(orderInput)
+          const created = await createWhatsappOrderWithRetry(orderInput)
           conversations.setLastOrder(chatId, created.orderId)
 
           const reply = [
@@ -149,7 +149,7 @@ const whatsapp = new WhatsappClient({
           return
         }
 
-        const created = await createWhatsappOrder(state.pendingOrder.orderInput)
+        const created = await createWhatsappOrderWithRetry(state.pendingOrder.orderInput)
         conversations.setLastOrder(chatId, created.orderId)
 
         const reply = [
@@ -299,7 +299,7 @@ const whatsapp = new WhatsappClient({
           return
         }
 
-        const created = await createWhatsappOrder(state.pendingOrder.orderInput)
+        const created = await createWhatsappOrderWithRetry(state.pendingOrder.orderInput)
         conversations.setLastOrder(chatId, created.orderId)
 
         const reply = [
@@ -534,6 +534,16 @@ async function requestQrPaymentProof(chatId, orderInput, summary) {
 
   conversations.add(chatId, 'bot', caption)
   await whatsapp.sendImage(chatId, paymentQrImagePath, caption)
+}
+
+async function createWhatsappOrderWithRetry(orderInput) {
+  try {
+    return await createWhatsappOrder(orderInput)
+  } catch (error) {
+    console.error('No se pudo registrar pedido en caja. Reintentando:', error)
+    await sleep(700)
+    return createWhatsappOrder(orderInput)
+  }
 }
 
 async function sendDeliveryPricingInfo(chatId) {
@@ -863,6 +873,20 @@ function buildMissingFieldsReply(missingFields) {
 }
 
 function buildContextualRecoveryReply(state) {
+  if (state.awaitingPaymentProof) {
+    const orderInput = state.awaitingPaymentProof.orderInput
+    const needsLocation = orderInput.fulfillmentType === 'delivery' && !orderInput.deliveryAddress
+    if (state.awaitingPaymentProof.proofReceived && needsLocation) {
+      return 'Ya recibi tu comprobante. Solo me falta tu ubicacion de WhatsApp o direccion exacta para pasar el pedido a caja.'
+    }
+
+    if (!state.awaitingPaymentProof.proofReceived) {
+      return 'Ya tengo tu pedido listo para QR. Por favor enviame el comprobante por este chat para que caja pueda revisar el pago.'
+    }
+
+    return 'Ya tengo tu comprobante y los datos del pedido. Tuve un problema pasandolo a caja, pero no necesito que me mandes todo de nuevo. Dame un momento, por favor.'
+  }
+
   if (state.pendingOrder) {
     return `${state.pendingOrder.summary}\n\nSigo teniendo tu pedido listo. Respondeme "Si" para confirmarlo o "No" para cancelarlo.`
   }
