@@ -2,8 +2,10 @@ import admin from 'firebase-admin'
 import { config } from './config.js'
 
 if (!admin.apps.length) {
+  const credential = getFirebaseCredential()
   admin.initializeApp({
     projectId: config.firebaseProjectId,
+    ...(credential ? { credential } : {}),
   })
 }
 
@@ -223,4 +225,15 @@ function getTodayKey(now = new Date()) {
   const month = String(now.getMonth() + 1).padStart(2, '0')
   const day = String(now.getDate()).padStart(2, '0')
   return `${year}-${month}-${day}`
+}
+
+function getFirebaseCredential() {
+  if (!config.firebaseServiceAccountJson) return null
+
+  const serviceAccount = JSON.parse(config.firebaseServiceAccountJson)
+  if (serviceAccount.private_key) {
+    serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n')
+  }
+
+  return admin.credential.cert(serviceAccount)
 }

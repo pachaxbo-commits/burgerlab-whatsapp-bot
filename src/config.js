@@ -14,6 +14,7 @@ export const config = {
   geminiApiKey: process.env.GEMINI_API_KEY || '',
   geminiModel: process.env.GEMINI_MODEL || 'gemini-3.5-flash',
   firebaseProjectId: process.env.FIREBASE_PROJECT_ID || 'comandero-6907f',
+  firebaseServiceAccountJson: process.env.FIREBASE_SERVICE_ACCOUNT_JSON || '',
   restaurantId: process.env.FIREBASE_RESTAURANT_ID || 'principal',
   botEnabled: readBoolean(process.env.BOT_ENABLED, true),
   adminToken: process.env.BOT_ADMIN_TOKEN || '',
