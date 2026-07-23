@@ -24,12 +24,39 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const menuImagePath = path.resolve(__dirname, '..', 'assets', 'menu-burger-lab.png')
 const deliveryTariffImagePath = path.resolve(__dirname, '..', 'assets', 'delivery-tarifario.png')
 const paymentQrImagePath = path.resolve(__dirname, '..', 'assets', 'qr-pago-burger-lab.png')
+const botVersion = process.env.RAILWAY_GIT_COMMIT_SHA?.slice(0, 7) || 'local'
 
 let botEnabled = config.botEnabled
 let acceptingOrders = getSettings().acceptingOrders
 const conversations = new ConversationStore()
 let catalogCache = null
 let catalogCacheAt = 0
+const fallbackCatalog = {
+  categories: [],
+  products: [
+    { id: 'burger-lab-simple-con-papas', name: 'Burger Lab Simple Con Papas', price: 22, categoryId: 'hamburguesas', extras: [] },
+    { id: 'burger-lab-simple-sin-papas', name: 'Burger Lab Simple Sin Papas', price: 19, categoryId: 'hamburguesas', extras: [] },
+    { id: 'burger-lab-doble-con-papas', name: 'Burger Lab DOBLE Con Papas', price: 37, categoryId: 'hamburguesas', extras: [] },
+    { id: 'burger-lab-doble-sin-papas', name: 'Burger Lab DOBLE Sin Papas', price: 34, categoryId: 'hamburguesas', extras: [] },
+    { id: 'bbq-simple-con-papas', name: 'BBQ Simple Con Papas', price: 23, categoryId: 'hamburguesas', extras: [] },
+    { id: 'bbq-simple-sin-papas', name: 'BBQ Simple Sin Papas', price: 20, categoryId: 'hamburguesas', extras: [] },
+    { id: 'bbq-doble-con-papas', name: 'BBQ DOBLE Con Papas', price: 38, categoryId: 'hamburguesas', extras: [] },
+    { id: 'bbq-doble-sin-papas', name: 'BBQ DOBLE Sin Papas', price: 35, categoryId: 'hamburguesas', extras: [] },
+    { id: 'coca-cola-300-ml', name: 'Coca Cola 300 ml', price: 5, categoryId: 'gaseosas', extras: [] },
+    { id: 'coca-cola-zero-300-ml', name: 'Coca Cola Zero 300 ml', price: 5, categoryId: 'gaseosas', extras: [] },
+    { id: 'sprite-300-ml', name: 'Sprite 300 ml', price: 5, categoryId: 'gaseosas', extras: [] },
+    { id: 'fanta-naranja-300-ml', name: 'Fanta Naranja 300 ml', price: 5, categoryId: 'gaseosas', extras: [] },
+    { id: 'fanta-papaya-300-ml', name: 'Fanta Papaya 300 ml', price: 5, categoryId: 'gaseosas', extras: [] },
+    { id: 'fanta-guarana-300-ml', name: 'Fanta Guarana 300 ml', price: 5, categoryId: 'gaseosas', extras: [] },
+    { id: 'agua-vital-350-ml', name: 'Agua Vital 350 ml', price: 5, categoryId: 'agua', extras: [] },
+    { id: 'pulpa-de-moconchinchi-330-ml', name: 'Pulpa de Moconchinchi 330 ml', price: 5, categoryId: 'refrescos-hervidos', extras: [] },
+    { id: 'pulpa-de-moconchinchi-2-litros', name: 'Pulpa de Moconchinchi 2 Litros', price: 20, categoryId: 'refrescos-hervidos', extras: [] },
+    { id: 'tamarindo-330-ml', name: 'Tamarindo 330 ml', price: 5, categoryId: 'refrescos-hervidos', extras: [] },
+    { id: 'tamarindo-2-litros', name: 'Tamarindo 2 Litros', price: 20, categoryId: 'refrescos-hervidos', extras: [] },
+    { id: 'flor-de-jamaica-330-ml', name: 'Flor de Jamaica 330 ml', price: 5, categoryId: 'refrescos-hervidos', extras: [] },
+    { id: 'flor-de-jamaica-2-litros', name: 'Flor de Jamaica 2 Litros', price: 20, categoryId: 'refrescos-hervidos', extras: [] },
+  ],
+}
 
 const whatsapp = new WhatsappClient({
   onMessage: async ({ chatId, text }) => {
@@ -184,7 +211,7 @@ const whatsapp = new WhatsappClient({
         return
       }
 
-      const catalog = await getCachedCatalog()
+      const catalog = await getCatalogForParsing()
       const quickResult = inferSimpleOrderFromCatalog(text, catalog)
       if (quickResult.items.length || (state.orderDraft?.items?.length && hasUsefulInferredFields(text))) {
         const baseDraft = state.orderDraft || buildEmptyAiResult()
@@ -389,6 +416,7 @@ app.use((req, res, next) => {
 app.get('/health', (_req, res) => {
   res.json({
     ok: true,
+    version: botVersion,
     botEnabled,
     acceptingOrders,
     autoRepliesEnabled: getSettings().autoRepliesEnabled,
@@ -591,6 +619,15 @@ async function getCachedCatalog() {
   catalogCache = await getCatalog()
   catalogCacheAt = now
   return catalogCache
+}
+
+async function getCatalogForParsing() {
+  try {
+    return await getCachedCatalog()
+  } catch (error) {
+    console.error('No se pudo leer catalogo desde Firebase. Usando catalogo de respaldo:', error)
+    return fallbackCatalog
+  }
 }
 
 function mergeOrderDraft(previous, result, text) {
@@ -838,7 +875,7 @@ function buildContextualRecoveryReply(state) {
 
 async function tryRecoverOrderFromText(chatId, text, state) {
   try {
-    const catalog = await getCachedCatalog()
+    const catalog = await getCatalogForParsing()
     const fallbackResult = mergeOrderDraft(
       state.orderDraft,
       inferSimpleOrderFromCatalog(text, catalog),
