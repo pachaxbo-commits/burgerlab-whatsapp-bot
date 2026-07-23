@@ -32,6 +32,7 @@ export class ConversationStore {
   setPendingOrder(chatId, orderInput, summary) {
     const state = this.get(chatId)
     state.pendingOrder = { orderInput, summary }
+    state.orderDraft = null
   }
 
   setOrderDraft(chatId, draft) {

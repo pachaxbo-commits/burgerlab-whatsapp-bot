@@ -61,6 +61,13 @@ const whatsapp = new WhatsappClient({
         return
       }
 
+      if (state.pendingOrder && isSummaryRequest(text)) {
+        const reply = `${state.pendingOrder.summary}\n\nAun tengo este pedido listo. Respondeme "Si" para confirmarlo o "No" para cancelarlo.`
+        conversations.add(chatId, 'bot', reply)
+        await whatsapp.sendText(chatId, reply)
+        return
+      }
+
       if (isMenuRequest(text)) {
         const caption = 'Claro, te paso nuestro menu. Cuando quieras pedir, mandame tu nombre, pedido, metodo de pago y si es recojo o envio.'
         conversations.add(chatId, 'bot', caption)
@@ -78,6 +85,26 @@ const whatsapp = new WhatsappClient({
           name: config.businessName,
           address: config.restaurantAddress,
         })
+        return
+      }
+
+      if (state.orderDraft?.items?.length && hasUsefulInferredFields(text)) {
+        const mergedResult = mergeOrderDraft(state.orderDraft, buildEmptyAiResult(), text)
+        conversations.setOrderDraft(chatId, mergedResult)
+        const missingFields = getMissingOrderFields(mergedResult)
+        if (missingFields.length > 0) {
+          const reply = buildMissingFieldsReply(missingFields)
+          conversations.add(chatId, 'bot', reply)
+          await whatsapp.sendText(chatId, reply)
+          return
+        }
+
+        const orderInput = buildOrderInput({ result: mergedResult, chatId })
+        const summary = buildOrderSummary(orderInput)
+        conversations.setPendingOrder(chatId, orderInput, summary)
+        const reply = `${summary}\n\nConfirmas el pedido?`
+        conversations.add(chatId, 'bot', reply)
+        await whatsapp.sendText(chatId, reply)
         return
       }
 
@@ -148,10 +175,9 @@ const whatsapp = new WhatsappClient({
       await whatsapp.sendText(chatId, result.reply)
     } catch (error) {
       console.error('Error procesando mensaje:', error)
-      await whatsapp.sendText(
-        chatId,
-        'Perdon, tuve un problema registrando eso. Me lo puedes mandar otra vez con nombre, pedido, metodo de pago y si es recojo o envio?',
-      )
+      const reply = buildContextualRecoveryReply(state)
+      conversations.add(chatId, 'bot', reply)
+      await whatsapp.sendText(chatId, reply)
     }
   },
 })
@@ -225,23 +251,25 @@ function mergeOrderDraft(previous, result, text) {
     customerName: result.customerName || inferred.customerName || previous?.customerName || '',
     customerPhone: result.customerPhone || previous?.customerPhone || '',
     paymentMethod: result.paymentMethod || inferred.paymentMethod || previous?.paymentMethod || null,
-    fulfillmentType: result.fulfillmentType || previous?.fulfillmentType || null,
+    fulfillmentType: result.fulfillmentType || inferred.fulfillmentType || previous?.fulfillmentType || null,
     deliveryAddress: result.deliveryAddress || previous?.deliveryAddress || '',
   }
 }
 
 function inferFieldsFromText(text) {
-  const normalized = String(text || '')
-    .normalize('NFD')
-    .replace(/\p{Diacritic}/gu, '')
-    .toLowerCase()
+  const normalized = normalizeText(text)
   const paymentMethod = /\bqr\b/.test(normalized)
     ? 'qr'
     : /\b(efectivo|cash)\b/.test(normalized)
       ? 'cash'
       : /\b(mixto|ambos)\b/.test(normalized)
-        ? 'mixed'
-        : null
+      ? 'mixed'
+      : null
+  const fulfillmentType = /\b(envio|delivery|domicilio)\b/.test(normalized)
+    ? 'delivery'
+    : /\b(recojo|recoger|retiro|retirar|local)\b/.test(normalized)
+      ? 'pickup'
+      : null
   const possibleName = String(text || '')
     .split(',')
     .map((part) => part.trim())
@@ -249,7 +277,27 @@ function inferFieldsFromText(text) {
 
   return {
     paymentMethod,
+    fulfillmentType,
     customerName: possibleName || '',
+  }
+}
+
+function hasUsefulInferredFields(text) {
+  const inferred = inferFieldsFromText(text)
+  return Boolean(inferred.customerName || inferred.paymentMethod || inferred.fulfillmentType)
+}
+
+function buildEmptyAiResult() {
+  return {
+    intent: 'order_draft',
+    reply: '',
+    missingFields: [],
+    customerName: '',
+    customerPhone: '',
+    paymentMethod: null,
+    fulfillmentType: null,
+    deliveryAddress: '',
+    items: [],
   }
 }
 
@@ -264,6 +312,23 @@ function getMissingOrderFields(result) {
 
 function buildMissingFieldsReply(missingFields) {
   return `Ya tengo el pedido avanzado. Para terminar de registrarlo, me falta: ${missingFields.join(', ')}.`
+}
+
+function buildContextualRecoveryReply(state) {
+  if (state.pendingOrder) {
+    return `${state.pendingOrder.summary}\n\nSigo teniendo tu pedido listo. Respondeme "Si" para confirmarlo o "No" para cancelarlo.`
+  }
+
+  if (state.orderDraft?.items?.length) {
+    const missingFields = getMissingOrderFields(state.orderDraft)
+    if (missingFields.length > 0) {
+      return buildMissingFieldsReply(missingFields)
+    }
+
+    return 'Ya tengo tu pedido avanzado. Si esta correcto, respondeme "Si"; si quieres cambiar algo, dime que modificamos.'
+  }
+
+  return 'Disculpa, tuve un problema momentaneo leyendo el mensaje. Me puedes mandar tu pedido con nombre, pedido, metodo de pago y si es recojo o envio?'
 }
 
 function buildOrderInput({ result, chatId }) {
@@ -486,6 +551,11 @@ function isConfirmText(text) {
 function isCancelText(text) {
   const normalized = normalizeText(text)
   return /^(no|cancelar|cancela|anular|anula|mejor no|ya no)$/.test(normalized)
+}
+
+function isSummaryRequest(text) {
+  const normalized = normalizeText(text)
+  return /\b(resumen|total|cuanto|cuanto era|pedido|que pedi)\b/.test(normalized)
 }
 function buildOrderSummary(orderInput) {
   const itemLines = orderInput.items.map((item) => {

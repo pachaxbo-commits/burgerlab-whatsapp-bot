@@ -36,7 +36,25 @@ const orderSchema = z.object({
 
 export async function understandMessage({ message, conversation, catalog }) {
   const prompt = buildPrompt({ message, conversation, catalog })
-  const response = await ai.models.generateContent({
+  const response = await generateContentWithRetry(prompt)
+
+  const text = response.text || '{}'
+  const parsed = JSON.parse(text)
+  return orderSchema.parse(parsed)
+}
+
+async function generateContentWithRetry(prompt) {
+  try {
+    return await generateContent(prompt)
+  } catch (error) {
+    if (!isTemporaryGeminiError(error)) throw error
+    await new Promise((resolve) => setTimeout(resolve, 900))
+    return generateContent(prompt)
+  }
+}
+
+function generateContent(prompt) {
+  return ai.models.generateContent({
     model: config.geminiModel,
     contents: prompt,
     config: {
@@ -44,10 +62,12 @@ export async function understandMessage({ message, conversation, catalog }) {
       temperature: 0.4,
     },
   })
+}
 
-  const text = response.text || '{}'
-  const parsed = JSON.parse(text)
-  return orderSchema.parse(parsed)
+function isTemporaryGeminiError(error) {
+  const status = Number(error?.status || error?.code || 0)
+  const message = String(error?.message || '')
+  return status === 429 || status === 500 || status === 503 || /UNAVAILABLE|high demand|quota|rate/i.test(message)
 }
 
 function buildPrompt({ message, conversation, catalog }) {
