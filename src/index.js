@@ -354,6 +354,15 @@ const whatsapp = new WhatsappClient({
       await whatsapp.sendText(chatId, result.reply)
     } catch (error) {
       console.error('Error procesando mensaje:', error)
+      const recovered = await tryRecoverOrderFromText(chatId, text, state)
+      if (recovered.handled) {
+        if (recovered.reply) {
+          conversations.add(chatId, 'bot', recovered.reply)
+          await whatsapp.sendText(chatId, recovered.reply)
+        }
+        return
+      }
+
       const reply = buildContextualRecoveryReply(state)
       conversations.add(chatId, 'bot', reply)
       await whatsapp.sendText(chatId, reply)
@@ -825,6 +834,44 @@ function buildContextualRecoveryReply(state) {
   }
 
   return 'Disculpa, tuve un problema momentaneo leyendo el mensaje. Me puedes mandar tu pedido con nombre, pedido, metodo de pago y si es recojo o envio?'
+}
+
+async function tryRecoverOrderFromText(chatId, text, state) {
+  try {
+    const catalog = await getCachedCatalog()
+    const fallbackResult = mergeOrderDraft(
+      state.orderDraft,
+      inferSimpleOrderFromCatalog(text, catalog),
+      text,
+    )
+
+    if (!fallbackResult.items.length) return { handled: false, reply: '' }
+
+    conversations.setOrderDraft(chatId, fallbackResult)
+    const missingFields = getMissingOrderFields(fallbackResult)
+    if (missingFields.length > 0) {
+      if (shouldProceedWithQrWhileWaitingLocation(fallbackResult, missingFields)) {
+        const orderInput = buildOrderInput({ result: fallbackResult, chatId })
+        const summary = buildOrderSummary(orderInput)
+        await requestQrPaymentProof(chatId, orderInput, summary)
+        return { handled: true, reply: '' }
+      }
+      return { handled: true, reply: buildMissingFieldsReply(missingFields) }
+    }
+
+    const orderInput = buildOrderInput({ result: fallbackResult, chatId })
+    const summary = buildOrderSummary(orderInput)
+    if (orderInput.expectedPaymentMethod === 'qr') {
+      await requestQrPaymentProof(chatId, orderInput, summary)
+      return { handled: true, reply: '' }
+    }
+
+    conversations.setPendingOrder(chatId, orderInput, summary)
+    return { handled: true, reply: `${summary}\n\nConfirmas el pedido?` }
+  } catch (fallbackError) {
+    console.error('No se pudo recuperar pedido localmente:', fallbackError)
+    return { handled: false, reply: '' }
+  }
 }
 
 function buildOrderInput({ result, chatId }) {
