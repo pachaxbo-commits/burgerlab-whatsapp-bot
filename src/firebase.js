@@ -62,7 +62,7 @@ export async function createWhatsappOrder(input) {
       })
     }
 
-    transaction.set(orderRef, {
+    const orderPayload = sanitizeFirestoreValue({
       id: orderRef.id,
       sequence: nextSequence,
       displayNumber,
@@ -92,10 +92,29 @@ export async function createWhatsappOrder(input) {
       whatsappChatId: normalizedInput.chatId,
     })
 
+    transaction.set(orderRef, orderPayload)
+
     return { orderId: orderRef.id, displayNumber }
   })
 
   return result
+}
+
+export async function testFirestoreWrite() {
+  const ref = db
+    .collection('restaurants')
+    .doc(config.restaurantId)
+    .collection('diagnostics')
+    .doc('bot-write-test')
+
+  await ref.set({
+    ok: true,
+    source: 'whatsapp-bot',
+    checkedAt: FieldValue.serverTimestamp(),
+  }, { merge: true })
+
+  const snap = await ref.get()
+  return { exists: snap.exists, data: snap.exists ? snap.data() : null }
 }
 
 function normalizeOrderInput(input) {
@@ -128,12 +147,37 @@ function normalizeOrderItem(item) {
     basePrice: Number(item.basePrice || 0),
     quantity: Number(item.quantity || 1),
     modifiers: {
-      extras: Array.isArray(modifiers.extras) ? modifiers.extras : [],
-      options: Array.isArray(modifiers.options) ? modifiers.options : [],
+      extras: Array.isArray(modifiers.extras) ? modifiers.extras.map(normalizeExtra) : [],
+      options: Array.isArray(modifiers.options) ? modifiers.options.map((option) => String(option || '')).filter(Boolean) : [],
       note: modifiers.note || '',
     },
     lineTotal: Number(item.lineTotal || 0),
   }
+}
+
+function normalizeExtra(extra) {
+  return {
+    id: extra?.id || '',
+    name: extra?.name || '',
+    price: Number(extra?.price || 0),
+  }
+}
+
+function sanitizeFirestoreValue(value) {
+  if (Array.isArray(value)) {
+    return value.map(sanitizeFirestoreValue).filter((item) => item !== undefined)
+  }
+
+  if (value && typeof value === 'object') {
+    const sanitized = {}
+    for (const [key, childValue] of Object.entries(value)) {
+      const nextValue = sanitizeFirestoreValue(childValue)
+      if (nextValue !== undefined) sanitized[key] = nextValue
+    }
+    return sanitized
+  }
+
+  return value === undefined ? null : value
 }
 
 export async function findOrder(orderId) {

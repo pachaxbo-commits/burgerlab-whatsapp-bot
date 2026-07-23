@@ -13,6 +13,7 @@ import {
   getWhatsappDeliveryOrdersPendingDispatchNotice,
   markWhatsappConfirmationSent,
   markWhatsappDispatchSent,
+  testFirestoreWrite,
 } from './firebase.js'
 import { understandMessage } from './gemini.js'
 import { WhatsappClient } from './whatsapp.js'
@@ -464,6 +465,19 @@ app.post('/whatsapp/logout', requireToken, async (_req, res) => {
   await fs.rm(config.qrPath, { force: true }).catch(() => undefined)
   setTimeout(() => void whatsapp.start(), 1500)
   res.json({ ok: true })
+})
+
+app.get('/debug/firebase-write', requireToken, async (_req, res) => {
+  try {
+    const result = await testFirestoreWrite()
+    res.json({ ok: true, result })
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      error: error instanceof Error ? error.message : 'Firestore write failed',
+      code: error?.code || '',
+    })
+  }
 })
 
 app.post('/bot/on', requireToken, (_req, res) => {
