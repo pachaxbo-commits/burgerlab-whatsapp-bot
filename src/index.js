@@ -39,6 +39,28 @@ const whatsapp = new WhatsappClient({
     const state = conversations.get(chatId)
 
     try {
+      if (state.pendingOrder && isConfirmText(text)) {
+        const created = await createWhatsappOrder(state.pendingOrder.orderInput)
+        conversations.setLastOrder(chatId, created.orderId)
+
+        const reply = [
+          'Perfecto, registre tu pedido.',
+          'En caja lo van a confirmar y te aviso el tiempo exacto de salida.',
+        ].join('\n')
+
+        conversations.add(chatId, 'bot', reply)
+        await whatsapp.sendText(chatId, reply)
+        return
+      }
+
+      if (state.pendingOrder && isCancelText(text)) {
+        state.pendingOrder = null
+        const reply = 'Sin problema. Lo dejamos pendiente; si quieres cambiar algo, mandame el pedido actualizado y lo armamos bien.'
+        conversations.add(chatId, 'bot', reply)
+        await whatsapp.sendText(chatId, reply)
+        return
+      }
+
       if (isMenuRequest(text)) {
         const caption = 'Claro, te paso nuestro menu. Cuando quieras pedir, mandame tu nombre, pedido, metodo de pago y si es recojo o envio.'
         conversations.add(chatId, 'bot', caption)
@@ -448,6 +470,23 @@ function buildConfirmationMessage(delayMinutes) {
   return `Listo, tu pedido ya fue confirmado. Sale aproximadamente en ${delayMinutes} minutos.`
 }
 
+function normalizeText(text) {
+  return String(text || '')
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .trim()
+    .toLowerCase()
+}
+
+function isConfirmText(text) {
+  const normalized = normalizeText(text)
+  return /^(si|confirmo|confirmado|correcto|dale|ok|okay|esta bien|de acuerdo|va|listo|ya)$/.test(normalized)
+}
+
+function isCancelText(text) {
+  const normalized = normalizeText(text)
+  return /^(no|cancelar|cancela|anular|anula|mejor no|ya no)$/.test(normalized)
+}
 function buildOrderSummary(orderInput) {
   const itemLines = orderInput.items.map((item) => {
     const extras = item.modifiers.extras.length
