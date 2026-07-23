@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { config } from './config.js'
 import { getSettings } from './settings.js'
 
-const ai = new GoogleGenAI({ apiKey: config.geminiApiKey })
+let geminiClient = null
 
 const nullableEnum = (values) =>
   z.preprocess((value) => {
@@ -105,7 +105,11 @@ async function generateContentWithRetry(prompt) {
 }
 
 function generateContent(prompt) {
-  return ai.models.generateContent({
+  if (!geminiClient) {
+    geminiClient = new GoogleGenAI({ apiKey: config.geminiApiKey })
+  }
+
+  return geminiClient.models.generateContent({
     model: config.geminiModel,
     contents: prompt,
     config: {
