@@ -62,7 +62,7 @@ export async function createWhatsappOrder(input) {
       })
     }
 
-    const orderPayload = sanitizeFirestoreValue({
+    const orderPayload = {
       id: orderRef.id,
       sequence: nextSequence,
       displayNumber,
@@ -90,7 +90,7 @@ export async function createWhatsappOrder(input) {
       deliveryAddress: normalizedInput.deliveryAddress,
       createdBy: normalizedInput.createdBy,
       whatsappChatId: normalizedInput.chatId,
-    })
+    }
 
     transaction.set(orderRef, orderPayload)
 
@@ -300,6 +300,7 @@ function isWithinDispatchNoticeWindow(order) {
   const deliveredAt = order.deliveredAt?.toMillis ? order.deliveredAt.toMillis() : new Date(order.deliveredAt || 0).getTime()
   const delayMinutes = Number(order.estimatedDelay || 10)
   const graceMs = 10 * 60 * 1000
+  if (!Number.isFinite(createdAt) && Number.isFinite(deliveredAt)) return true
   return Number.isFinite(createdAt) && Number.isFinite(deliveredAt) && deliveredAt <= createdAt + delayMinutes * 60 * 1000 + graceMs
 }
 
