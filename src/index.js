@@ -64,6 +64,7 @@ const whatsapp = new WhatsappClient({
   onMessage: async ({ chatId, text }) => {
     if (!botEnabled) return
 
+    await refreshTemporarySettings()
     const settings = getSettings()
 
     if (!settings.autoRepliesEnabled) return
@@ -404,6 +405,26 @@ const whatsapp = new WhatsappClient({
   },
 })
 
+async function refreshTemporarySettings() {
+  const settings = getSettings()
+  if (
+    settings.acceptingOrders === false &&
+    settings.acceptingOrdersPausedUntil &&
+    new Date(settings.acceptingOrdersPausedUntil).getTime() <= Date.now()
+  ) {
+    const nextSettings = await updateSettings({
+      acceptingOrders: true,
+      acceptingOrdersPausedUntil: '',
+      acceptingOrdersPauseReason: '',
+    })
+    acceptingOrders = nextSettings.acceptingOrders
+    return nextSettings
+  }
+
+  acceptingOrders = settings.acceptingOrders
+  return settings
+}
+
 const app = express()
 app.use(express.json())
 app.use((req, res, next) => {
@@ -417,15 +438,23 @@ app.use((req, res, next) => {
   next()
 })
 
-app.get('/health', (_req, res) => {
-  res.json({
-    ok: true,
-    version: botVersion,
-    botEnabled,
-    acceptingOrders,
-    autoRepliesEnabled: getSettings().autoRepliesEnabled,
-    whatsappConnected: whatsapp.connected,
-  })
+app.get('/health', async (_req, res) => {
+  try {
+    await refreshTemporarySettings()
+    const settings = getSettings()
+    res.json({
+      ok: true,
+      version: botVersion,
+      botEnabled,
+      acceptingOrders,
+      acceptingOrdersPausedUntil: settings.acceptingOrdersPausedUntil,
+      acceptingOrdersPauseReason: settings.acceptingOrdersPauseReason,
+      autoRepliesEnabled: settings.autoRepliesEnabled,
+      whatsappConnected: whatsapp.connected,
+    })
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error instanceof Error ? error.message : 'Health failed' })
+  }
 })
 
 app.get('/settings', requireToken, (_req, res) => {
@@ -487,16 +516,26 @@ app.post('/bot/off', requireToken, (_req, res) => {
   res.json({ ok: true, botEnabled })
 })
 
-app.post('/orders/accepting/on', requireToken, (_req, res) => {
+app.post('/orders/accepting/on', requireToken, async (_req, res) => {
   acceptingOrders = true
-  void updateSettings({ acceptingOrders: true })
-  res.json({ ok: true, acceptingOrders })
+  const settings = await updateSettings({
+    acceptingOrders: true,
+    acceptingOrdersPausedUntil: '',
+    acceptingOrdersPauseReason: '',
+  })
+  res.json({ ok: true, acceptingOrders, settings })
 })
 
-app.post('/orders/accepting/off', requireToken, (_req, res) => {
+app.post('/orders/accepting/off', requireToken, async (req, res) => {
+  const pausedUntil = typeof req.body?.pausedUntil === 'string' ? req.body.pausedUntil : ''
+  const pauseReason = typeof req.body?.pauseReason === 'string' ? req.body.pauseReason : ''
   acceptingOrders = false
-  void updateSettings({ acceptingOrders: false })
-  res.json({ ok: true, acceptingOrders })
+  const settings = await updateSettings({
+    acceptingOrders: false,
+    acceptingOrdersPausedUntil: pausedUntil,
+    acceptingOrdersPauseReason: pauseReason,
+  })
+  res.json({ ok: true, acceptingOrders, settings })
 })
 
 app.post('/orders/:orderId/confirmed', requireToken, async (req, res) => {

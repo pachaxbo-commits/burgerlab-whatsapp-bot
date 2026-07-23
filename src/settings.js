@@ -6,6 +6,8 @@ const settingsPath = config.settingsPath
 
 export const defaultSettings = {
   acceptingOrders: true,
+  acceptingOrdersPausedUntil: '',
+  acceptingOrdersPauseReason: '',
   autoRepliesEnabled: true,
   deliveryGroupName: config.deliveryGroupName,
   deliveryGroupId: config.deliveryGroupId,
@@ -56,6 +58,8 @@ function normalizeSettings(value) {
     ...defaultSettings,
     ...pickAllowedSettings(value || {}),
     acceptingOrders: value?.acceptingOrders !== false,
+    acceptingOrdersPausedUntil: typeof value?.acceptingOrdersPausedUntil === 'string' ? value.acceptingOrdersPausedUntil : '',
+    acceptingOrdersPauseReason: typeof value?.acceptingOrdersPauseReason === 'string' ? value.acceptingOrdersPauseReason : '',
     autoRepliesEnabled: value?.autoRepliesEnabled !== false,
   }
 }

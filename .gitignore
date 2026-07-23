@@ -2,4 +2,7 @@ node_modules
 .env
 firebase-service-account.json
 auth_info
+bot-qr.png
+bot-settings.json
+data
 *.log
