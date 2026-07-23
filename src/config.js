@@ -8,7 +8,7 @@ function readBoolean(value, fallback) {
 export const config = {
   port: Number(process.env.PORT || 3010),
   openaiApiKey: process.env.OPENAI_API_KEY || '',
-  openaiModel: process.env.OPENAI_MODEL || 'gpt-4.1-mini',
+  openaiModel: process.env.OPENAI_MODEL || 'gpt-5.4-mini',
   geminiApiKey: process.env.GEMINI_API_KEY || '',
   geminiModel: process.env.GEMINI_MODEL || 'gemini-3.5-flash',
   firebaseProjectId: process.env.FIREBASE_PROJECT_ID || 'comandero-6907f',
