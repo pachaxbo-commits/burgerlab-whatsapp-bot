@@ -8,6 +8,8 @@ export const defaultSettings = {
   acceptingOrders: true,
   acceptingOrdersPausedUntil: '',
   acceptingOrdersPauseReason: '',
+  pickupOnlyMode: false,
+  pickupOnlyMessage: 'Por el momento solo estamos trabajando pedidos para recojo en el restaurante. Si te parece bien, puedo registrar tu pedido para que pases a recogerlo.',
   autoRepliesEnabled: true,
   deliveryGroupName: config.deliveryGroupName,
   deliveryGroupId: config.deliveryGroupId,
@@ -60,6 +62,8 @@ function normalizeSettings(value) {
     acceptingOrders: value?.acceptingOrders !== false,
     acceptingOrdersPausedUntil: typeof value?.acceptingOrdersPausedUntil === 'string' ? value.acceptingOrdersPausedUntil : '',
     acceptingOrdersPauseReason: typeof value?.acceptingOrdersPauseReason === 'string' ? value.acceptingOrdersPauseReason : '',
+    pickupOnlyMode: value?.pickupOnlyMode === true,
+    pickupOnlyMessage: typeof value?.pickupOnlyMessage === 'string' ? value.pickupOnlyMessage : defaultSettings.pickupOnlyMessage,
     autoRepliesEnabled: value?.autoRepliesEnabled !== false,
   }
 }

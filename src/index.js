@@ -189,7 +189,9 @@ const whatsapp = new WhatsappClient({
 
       const shouldSendMenuForOrderStart = isFirstCustomerMessage && isOrderStartRequest(text)
       if (isMenuRequest(text) || shouldSendMenuForOrderStart) {
-        const caption = 'Claro, te paso nuestro menu. Cuando quieras pedir, mandame tu nombre, pedido, metodo de pago y si es recojo o envio.'
+        const caption = getSettings().pickupOnlyMode
+          ? `Claro, te paso nuestro menu. ${getSettings().pickupOnlyMessage} Cuando quieras pedir, mandame tu nombre, pedido y metodo de pago.`
+          : 'Claro, te paso nuestro menu. Cuando quieras pedir, mandame tu nombre, pedido, metodo de pago y si es recojo o envio.'
         conversations.add(chatId, 'bot', caption)
         await whatsapp.sendImage(chatId, menuImagePath, caption)
         if (!looksLikeConcreteOrderText(text)) return
@@ -717,7 +719,7 @@ async function getCatalogForParsing() {
 
 function mergeOrderDraft(previous, result, text) {
   const inferred = inferFieldsFromText(text)
-  return {
+  const merged = {
     ...result,
     items: result.items.length ? result.items : previous?.items ?? [],
     customerName: result.customerName || inferred.customerName || previous?.customerName || '',
@@ -726,6 +728,17 @@ function mergeOrderDraft(previous, result, text) {
     fulfillmentType: result.fulfillmentType || inferred.fulfillmentType || previous?.fulfillmentType || null,
     deliveryAddress: result.deliveryAddress || inferred.deliveryAddress || previous?.deliveryAddress || '',
   }
+
+  if (getSettings().pickupOnlyMode && merged.fulfillmentType === 'delivery') {
+    return {
+      ...merged,
+      fulfillmentType: 'pickup',
+      deliveryAddress: '',
+      reply: merged.reply ? `${getSettings().pickupOnlyMessage}\n\n${merged.reply}` : getSettings().pickupOnlyMessage,
+    }
+  }
+
+  return merged
 }
 
 function inferFieldsFromText(text) {
