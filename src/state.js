@@ -45,7 +45,7 @@ export class ConversationStore {
 
   setAwaitingPaymentProof(chatId, orderInput, summary) {
     const state = this.get(chatId)
-    state.awaitingPaymentProof = { orderInput, summary }
+    state.awaitingPaymentProof = { orderInput, summary, proofReceived: false }
     state.pendingOrder = null
     state.orderDraft = null
   }

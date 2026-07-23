@@ -50,11 +50,29 @@ const whatsapp = new WhatsappClient({
 
     conversations.add(chatId, 'cliente', text)
     const state = conversations.get(chatId)
+    const isFirstCustomerMessage = state.messages.filter((entry) => entry.role === 'cliente').length === 1
     await whatsapp.startTyping(chatId)
 
     try {
       if (state.awaitingPaymentProof) {
+        const inferred = inferFieldsFromText(text)
+        if (inferred.deliveryAddress) {
+          state.awaitingPaymentProof.orderInput.deliveryAddress = inferred.deliveryAddress
+        }
         if (isPaymentProofMessage(text)) {
+          state.awaitingPaymentProof.proofReceived = true
+        }
+
+        if (state.awaitingPaymentProof.orderInput.fulfillmentType === 'delivery' && !state.awaitingPaymentProof.orderInput.deliveryAddress) {
+          const reply = state.awaitingPaymentProof.proofReceived
+            ? 'Perfecto, ya recibi el comprobante. Solo me falta tu ubicacion de WhatsApp o direccion exacta para pasar el pedido a caja.'
+            : 'Ya tengo tu pedido listo para QR. Por favor enviame el comprobante y tu ubicacion de WhatsApp o direccion exacta para el envio.'
+          conversations.add(chatId, 'bot', reply)
+          await whatsapp.sendText(chatId, reply)
+          return
+        }
+
+        if (state.awaitingPaymentProof.proofReceived) {
           const orderInput = {
             ...state.awaitingPaymentProof.orderInput,
             qrProofReceived: true,
@@ -128,11 +146,12 @@ const whatsapp = new WhatsappClient({
         return
       }
 
-      if (isMenuRequest(text)) {
+      const shouldSendMenuForOrderStart = isFirstCustomerMessage && isOrderStartRequest(text)
+      if (isMenuRequest(text) || shouldSendMenuForOrderStart) {
         const caption = 'Claro, te paso nuestro menu. Cuando quieras pedir, mandame tu nombre, pedido, metodo de pago y si es recojo o envio.'
         conversations.add(chatId, 'bot', caption)
         await whatsapp.sendImage(chatId, menuImagePath, caption)
-        return
+        if (!looksLikeConcreteOrderText(text)) return
       }
 
       if (isDeliveryPricingRequest(text)) {
@@ -140,7 +159,7 @@ const whatsapp = new WhatsappClient({
         return
       }
 
-      if (isPaymentQrRequest(text) && !state.pendingOrder) {
+      if (isPaymentQrRequest(text) && !state.pendingOrder && !looksLikeConcreteOrderText(text)) {
         await sendPaymentQrInfo(chatId)
         return
       }
@@ -167,6 +186,12 @@ const whatsapp = new WhatsappClient({
         conversations.setOrderDraft(chatId, mergedResult)
         const missingFields = getMissingOrderFields(mergedResult)
         if (missingFields.length > 0) {
+          if (shouldProceedWithQrWhileWaitingLocation(mergedResult, missingFields)) {
+            const orderInput = buildOrderInput({ result: mergedResult, chatId })
+            const summary = buildOrderSummary(orderInput)
+            await requestQrPaymentProof(chatId, orderInput, summary)
+            return
+          }
           const reply = buildMissingFieldsReply(missingFields)
           conversations.add(chatId, 'bot', reply)
           await whatsapp.sendText(chatId, reply)
@@ -182,6 +207,10 @@ const whatsapp = new WhatsappClient({
         }
 
         const summary = buildOrderSummary(orderInput)
+        if (orderInput.expectedPaymentMethod === 'qr') {
+          await requestQrPaymentProof(chatId, orderInput, summary)
+          return
+        }
         conversations.setPendingOrder(chatId, orderInput, summary)
         const reply = `${summary}\n\nConfirmas el pedido?`
         conversations.add(chatId, 'bot', reply)
@@ -194,6 +223,12 @@ const whatsapp = new WhatsappClient({
         conversations.setOrderDraft(chatId, mergedResult)
         const missingFields = getMissingOrderFields(mergedResult)
         if (missingFields.length > 0) {
+          if (shouldProceedWithQrWhileWaitingLocation(mergedResult, missingFields)) {
+            const orderInput = buildOrderInput({ result: mergedResult, chatId })
+            const summary = buildOrderSummary(orderInput)
+            await requestQrPaymentProof(chatId, orderInput, summary)
+            return
+          }
           const reply = buildMissingFieldsReply(missingFields)
           conversations.add(chatId, 'bot', reply)
           await whatsapp.sendText(chatId, reply)
@@ -202,6 +237,10 @@ const whatsapp = new WhatsappClient({
 
         const orderInput = buildOrderInput({ result: mergedResult, chatId })
         const summary = buildOrderSummary(orderInput)
+        if (orderInput.expectedPaymentMethod === 'qr') {
+          await requestQrPaymentProof(chatId, orderInput, summary)
+          return
+        }
         conversations.setPendingOrder(chatId, orderInput, summary)
         const reply = `${summary}\n\nConfirmas el pedido?`
         conversations.add(chatId, 'bot', reply)
@@ -247,7 +286,7 @@ const whatsapp = new WhatsappClient({
         return
       }
 
-      if (result.intent === 'payment_qr_request' && !state.pendingOrder) {
+      if (result.intent === 'payment_qr_request' && !state.pendingOrder && !result.items.length) {
         await sendPaymentQrInfo(chatId)
         return
       }
@@ -264,6 +303,12 @@ const whatsapp = new WhatsappClient({
       conversations.setOrderDraft(chatId, mergedResult)
       const missingFields = getMissingOrderFields(mergedResult)
       if (mergedResult.items.length > 0 && missingFields.length > 0) {
+        if (shouldProceedWithQrWhileWaitingLocation(mergedResult, missingFields)) {
+          const orderInput = buildOrderInput({ result: mergedResult, chatId })
+          const summary = buildOrderSummary(orderInput)
+          await requestQrPaymentProof(chatId, orderInput, summary)
+          return
+        }
         const reply = buildMissingFieldsReply(missingFields)
         conversations.add(chatId, 'bot', reply)
         await whatsapp.sendText(chatId, reply)
@@ -279,6 +324,10 @@ const whatsapp = new WhatsappClient({
           return
         }
         const summary = buildOrderSummary(orderInput)
+        if (orderInput.expectedPaymentMethod === 'qr') {
+          await requestQrPaymentProof(chatId, orderInput, summary)
+          return
+        }
         conversations.setPendingOrder(chatId, orderInput, summary)
         const reply = `${summary}\n\nConfirmas el pedido?`
 
@@ -380,12 +429,18 @@ app.listen(config.port, () => {
 
 async function requestQrPaymentProof(chatId, orderInput, summary) {
   conversations.setAwaitingPaymentProof(chatId, orderInput, summary)
+  const deliveryLine = orderInput.fulfillmentType === 'delivery'
+    ? orderInput.deliveryAddress
+      ? 'El envio se paga directamente al delivery.'
+      : 'Como es envio, tambien necesito tu ubicacion de WhatsApp o direccion exacta.'
+    : 'Caja revisara el comprobante antes de confirmar el pedido.'
   const caption = [
-    'Claro, puedes pagar por QR.',
-    'Te paso el QR del restaurante. Por favor envia el comprobante por este chat para registrar tu pedido.',
-    orderInput.fulfillmentType === 'delivery'
-      ? 'Importante: el QR es solo para el pedido. El envio se paga directamente al delivery.'
-      : 'Caja revisara el comprobante antes de confirmar el pedido.',
+    summary,
+    '',
+    'Te paso el QR del restaurante para pagar el pedido.',
+    `Total a pagar por QR: Bs ${orderInput.total}.`,
+    'Cuando envies el comprobante por este chat, caja revisara el pago y te avisare el tiempo de salida.',
+    deliveryLine,
   ].join('\n')
 
   conversations.add(chatId, 'bot', caption)
@@ -622,6 +677,14 @@ function getMissingOrderFields(result) {
   return missing
 }
 
+function shouldProceedWithQrWhileWaitingLocation(result, missingFields) {
+  return result.items.length > 0 &&
+    result.paymentMethod === 'qr' &&
+    result.fulfillmentType === 'delivery' &&
+    missingFields.length === 1 &&
+    missingFields[0] === 'tu ubicacion de WhatsApp'
+}
+
 function buildMissingFieldsReply(missingFields) {
   return `Ya tengo el pedido avanzado. Para terminar de registrarlo, me falta: ${missingFields.join(', ')}.`
 }
@@ -704,6 +767,16 @@ function isMenuRequest(text) {
     .toLowerCase()
 
   return /\b(menu|carta|precios|precio|hamburguesas|promos|promociones|catalogo)\b/.test(normalized)
+}
+
+function isOrderStartRequest(text) {
+  const normalized = normalizeText(text)
+  return /\b(quiero|quisiera|pedido|pedir|ordenar|hamburguesa|burger|bbq|simple|doble|papas|gaseosa|mocochinchi|agua|refresco)\b/.test(normalized)
+}
+
+function looksLikeConcreteOrderText(text) {
+  const normalized = normalizeText(text)
+  return /\b(burger|hamburguesa|bbq|simple|doble|papas|tocino|pina|gaseosa|coca|fanta|sprite|agua|mocochinchi|jamaica|tamarindo|refresco|helado)\b/.test(normalized)
 }
 
 function isDeliveryPricingRequest(text) {
