@@ -68,6 +68,13 @@ const whatsapp = new WhatsappClient({
         return
       }
 
+      if (!state.pendingOrder && !state.orderDraft?.items?.length && state.lastOrderId && isThanksText(text)) {
+        const reply = 'Con gusto, gracias a ti. Estamos atentos a tu pedido.'
+        conversations.add(chatId, 'bot', reply)
+        await whatsapp.sendText(chatId, reply)
+        return
+      }
+
       if (isMenuRequest(text)) {
         const caption = 'Claro, te paso nuestro menu. Cuando quieras pedir, mandame tu nombre, pedido, metodo de pago y si es recojo o envio.'
         conversations.add(chatId, 'bot', caption)
@@ -85,6 +92,37 @@ const whatsapp = new WhatsappClient({
           name: config.businessName,
           address: config.restaurantAddress,
         })
+        return
+      }
+
+      const catalog = await getCatalog()
+      const quickResult = inferSimpleOrderFromCatalog(text, catalog)
+      if (quickResult.items.length || (state.orderDraft?.items?.length && hasUsefulInferredFields(text))) {
+        const baseDraft = state.orderDraft || buildEmptyAiResult()
+        const deterministicResult = quickResult.items.length ? quickResult : buildEmptyAiResult()
+        const mergedResult = mergeOrderDraft(baseDraft, deterministicResult, text)
+        conversations.setOrderDraft(chatId, mergedResult)
+        const missingFields = getMissingOrderFields(mergedResult)
+        if (missingFields.length > 0) {
+          const reply = buildMissingFieldsReply(missingFields)
+          conversations.add(chatId, 'bot', reply)
+          await whatsapp.sendText(chatId, reply)
+          return
+        }
+
+        const orderInput = buildOrderInput({ result: mergedResult, chatId })
+        if (orderInput.fulfillmentType === 'delivery' && orderInput.deliveryQuoteStatus === 'missing_location') {
+          const reply = 'Perfecto, ya tengo tu pedido. Para cotizar el envio necesito que me mandes tu ubicacion de WhatsApp, por favor.'
+          conversations.add(chatId, 'bot', reply)
+          await whatsapp.sendText(chatId, reply)
+          return
+        }
+
+        const summary = buildOrderSummary(orderInput)
+        conversations.setPendingOrder(chatId, orderInput, summary)
+        const reply = `${summary}\n\nConfirmas el pedido?`
+        conversations.add(chatId, 'bot', reply)
+        await whatsapp.sendText(chatId, reply)
         return
       }
 
@@ -108,7 +146,6 @@ const whatsapp = new WhatsappClient({
         return
       }
 
-      const catalog = await getCatalog()
       const result = await understandMessage({
         message: text,
         conversation: state.messages,
@@ -274,11 +311,12 @@ function inferFieldsFromText(text) {
     .split(',')
     .map((part) => part.trim())
     .find((part) => /^[\p{L}]{3,}(?:\s+[\p{L}]{3,})?$/u.test(part) && !/qr|efectivo|mixto/i.test(part))
+  const introducedName = String(text || '').match(/\b(?:soy|nombre|me llamo)\s+([\p{L}]{3,}(?:\s+[\p{L}]{3,})?)/iu)?.[1]?.trim()
 
   return {
     paymentMethod,
     fulfillmentType,
-    customerName: possibleName || '',
+    customerName: introducedName || possibleName || '',
   }
 }
 
@@ -299,6 +337,44 @@ function buildEmptyAiResult() {
     deliveryAddress: '',
     items: [],
   }
+}
+
+function inferSimpleOrderFromCatalog(text, catalog) {
+  const normalized = normalizeText(text)
+  const products = [...(catalog.products || [])]
+    .filter((product) => product.isVisible !== false && product.isActive !== false)
+    .sort((left, right) => normalizeText(right.name).length - normalizeText(left.name).length)
+  const matched = []
+
+  for (const product of products) {
+    const productName = normalizeText(product.name)
+    if (!productName || !normalized.includes(productName)) continue
+    if (matched.some((item) => item.productId === product.id)) continue
+    matched.push({
+      productId: product.id,
+      name: product.name,
+      basePrice: Number(product.price || 0),
+      quantity: inferQuantityBeforeProduct(normalized, productName),
+      note: '',
+      options: [],
+      extras: [],
+    })
+  }
+
+  return {
+    ...buildEmptyAiResult(),
+    items: matched,
+  }
+}
+
+function inferQuantityBeforeProduct(normalizedText, normalizedProductName) {
+  const index = normalizedText.indexOf(normalizedProductName)
+  const before = index > 0 ? normalizedText.slice(Math.max(0, index - 18), index) : ''
+  const numberMatch = before.match(/\b([2-9])\s*(x|de)?\s*$/)
+  if (numberMatch) return Number(numberMatch[1])
+  if (/\b(dos)\s*$/.test(before)) return 2
+  if (/\b(tres)\s*$/.test(before)) return 3
+  return 1
 }
 
 function getMissingOrderFields(result) {
@@ -551,6 +627,11 @@ function isConfirmText(text) {
 function isCancelText(text) {
   const normalized = normalizeText(text)
   return /^(no|cancelar|cancela|anular|anula|mejor no|ya no)$/.test(normalized)
+}
+
+function isThanksText(text) {
+  const normalized = normalizeText(text)
+  return /^(ok|okay|listo|gracias|muchas gracias|ok gracias|dale gracias|perfecto gracias|ya gracias)$/.test(normalized)
 }
 
 function isSummaryRequest(text) {
