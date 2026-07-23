@@ -7,6 +7,7 @@ import qrcode from 'qrcode-terminal'
 import QRCode from 'qrcode'
 import pino from 'pino'
 import { Boom } from '@hapi/boom'
+import { config } from './config.js'
 
 const logger = pino({ level: 'silent' })
 
@@ -18,7 +19,7 @@ export class WhatsappClient {
   }
 
   async start() {
-    const { state, saveCreds } = await useMultiFileAuthState('auth_info')
+    const { state, saveCreds } = await useMultiFileAuthState(config.authDir)
     const { version } = await fetchLatestBaileysVersion()
 
     this.sock = makeWASocket({
@@ -119,9 +120,9 @@ export class WhatsappClient {
     if (qr) {
       console.log('Escanea este QR con WhatsApp:')
       qrcode.generate(qr, { small: true })
-      QRCode.toFile('bot-qr.png', qr, { width: 720, margin: 2 })
-        .then(() => console.log('QR guardado en bot-qr.png'))
-        .catch((error) => console.error('No se pudo guardar bot-qr.png:', error))
+      QRCode.toFile(config.qrPath, qr, { width: 720, margin: 2 })
+        .then(() => console.log(`QR guardado en ${config.qrPath}`))
+        .catch((error) => console.error('No se pudo guardar el QR:', error))
     }
 
     if (connection === 'open') {

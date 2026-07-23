@@ -1,3 +1,4 @@
+import path from 'node:path'
 import 'dotenv/config'
 
 function readBoolean(value, fallback) {
@@ -7,6 +8,7 @@ function readBoolean(value, fallback) {
 
 export const config = {
   port: Number(process.env.PORT || 3010),
+  dataDir: path.resolve(process.env.DATA_DIR || '.'),
   openaiApiKey: process.env.OPENAI_API_KEY || '',
   openaiModel: process.env.OPENAI_MODEL || 'gpt-5.4-mini',
   geminiApiKey: process.env.GEMINI_API_KEY || '',
@@ -31,6 +33,10 @@ export const config = {
     process.env.BOT_PERSONALITY ||
     'Natural, formal y vendedor. Habla como Burger Lab: amable, seguro, breve, con energia de restaurante. Ofrece ayuda sin sonar robotico ni exagerado.',
 }
+
+config.authDir = path.join(config.dataDir, 'auth_info')
+config.qrPath = path.join(config.dataDir, 'bot-qr.png')
+config.settingsPath = path.join(config.dataDir, 'bot-settings.json')
 
 export function assertRequiredConfig() {
   const missing = []

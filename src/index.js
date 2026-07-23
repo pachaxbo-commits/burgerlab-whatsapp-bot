@@ -404,7 +404,7 @@ app.get('/whatsapp/groups', requireToken, async (_req, res) => {
 
 app.get('/whatsapp/qr', requireToken, async (_req, res) => {
   try {
-    const qrBuffer = await fs.readFile(path.resolve('bot-qr.png'))
+    const qrBuffer = await fs.readFile(config.qrPath)
     res.json({
       ok: true,
       connected: whatsapp.connected,
@@ -417,8 +417,8 @@ app.get('/whatsapp/qr', requireToken, async (_req, res) => {
 
 app.post('/whatsapp/logout', requireToken, async (_req, res) => {
   await whatsapp.logout()
-  await fs.rm(path.resolve('auth_info'), { recursive: true, force: true }).catch(() => undefined)
-  await fs.rm(path.resolve('bot-qr.png'), { force: true }).catch(() => undefined)
+  await fs.rm(config.authDir, { recursive: true, force: true }).catch(() => undefined)
+  await fs.rm(config.qrPath, { force: true }).catch(() => undefined)
   setTimeout(() => void whatsapp.start(), 1500)
   res.json({ ok: true })
 })

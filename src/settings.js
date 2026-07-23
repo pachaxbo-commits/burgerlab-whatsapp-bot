@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { config } from './config.js'
 
-const settingsPath = path.resolve('bot-settings.json')
+const settingsPath = config.settingsPath
 
 export const defaultSettings = {
   acceptingOrders: true,
@@ -47,6 +47,7 @@ export async function updateSettings(patch) {
 }
 
 async function saveSettings(settings) {
+  await fs.mkdir(path.dirname(settingsPath), { recursive: true })
   await fs.writeFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, 'utf8')
 }
 
