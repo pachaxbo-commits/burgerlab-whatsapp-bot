@@ -39,6 +39,7 @@ export async function createWhatsappOrder(input) {
   const todayKey = getTodayKey()
   const dayRef = db.collection('restaurants').doc(config.restaurantId).collection('days').doc(todayKey)
   const orderRef = dayRef.collection('orders').doc()
+  const normalizedInput = normalizeOrderInput(input)
 
   const result = await db.runTransaction(async (transaction) => {
     const daySnap = await transaction.get(dayRef)
@@ -68,33 +69,71 @@ export async function createWhatsappOrder(input) {
       createdAt: now,
       updatedAt: now,
       status: 'pending',
-      items: input.items,
-      total: input.total,
-      productSubtotal: input.productSubtotal ?? input.total,
-      deliveryFee: input.deliveryFee ?? 0,
-      deliveryDistanceKm: input.deliveryDistanceKm ?? null,
-      deliveryQuoteStatus: input.deliveryQuoteStatus || 'not_needed',
-      deliveryQuoteNote: input.deliveryQuoteNote || '',
-      payment: buildPendingPayment(input.expectedPaymentMethod),
+      items: normalizedInput.items,
+      total: normalizedInput.total,
+      productSubtotal: normalizedInput.productSubtotal,
+      deliveryFee: normalizedInput.deliveryFee,
+      deliveryDistanceKm: normalizedInput.deliveryDistanceKm,
+      deliveryQuoteStatus: normalizedInput.deliveryQuoteStatus,
+      deliveryQuoteNote: normalizedInput.deliveryQuoteNote,
+      payment: buildPendingPayment(normalizedInput.expectedPaymentMethod),
       paymentStatus: 'pending',
       paymentMethod: null,
-      qrProofReceived: Boolean(input.qrProofReceived),
-      paymentReviewNote: input.paymentReviewNote || '',
-      expectedPaymentMethod: input.expectedPaymentMethod,
+      qrProofReceived: normalizedInput.qrProofReceived,
+      paymentReviewNote: normalizedInput.paymentReviewNote,
+      expectedPaymentMethod: normalizedInput.expectedPaymentMethod,
       orderSource: 'whatsapp',
-      fulfillmentType: input.fulfillmentType,
+      fulfillmentType: normalizedInput.fulfillmentType,
       tableInfo: '',
-      customerName: input.customerName,
-      customerPhone: input.customerPhone,
-      deliveryAddress: input.deliveryAddress || '',
-      createdBy: input.createdBy || 'whatsapp-bot',
-      whatsappChatId: input.chatId,
+      customerName: normalizedInput.customerName,
+      customerPhone: normalizedInput.customerPhone,
+      deliveryAddress: normalizedInput.deliveryAddress,
+      createdBy: normalizedInput.createdBy,
+      whatsappChatId: normalizedInput.chatId,
     })
 
     return { orderId: orderRef.id, displayNumber }
   })
 
   return result
+}
+
+function normalizeOrderInput(input) {
+  const total = Number(input.total || 0)
+  return {
+    items: Array.isArray(input.items) ? input.items.map(normalizeOrderItem) : [],
+    total,
+    productSubtotal: Number(input.productSubtotal ?? total),
+    deliveryFee: Number(input.deliveryFee ?? 0),
+    deliveryDistanceKm: input.deliveryDistanceKm ?? null,
+    deliveryQuoteStatus: input.deliveryQuoteStatus || 'not_needed',
+    deliveryQuoteNote: input.deliveryQuoteNote || '',
+    expectedPaymentMethod: input.expectedPaymentMethod || 'cash',
+    qrProofReceived: Boolean(input.qrProofReceived),
+    paymentReviewNote: input.paymentReviewNote || '',
+    fulfillmentType: input.fulfillmentType || 'pickup',
+    customerName: input.customerName || 'Cliente WhatsApp',
+    customerPhone: input.customerPhone || '',
+    deliveryAddress: input.deliveryAddress || '',
+    createdBy: input.createdBy || 'whatsapp-bot',
+    chatId: input.chatId || '',
+  }
+}
+
+function normalizeOrderItem(item) {
+  const modifiers = item.modifiers || {}
+  return {
+    id: item.id || item.productId || '',
+    name: item.name || 'Producto',
+    basePrice: Number(item.basePrice || 0),
+    quantity: Number(item.quantity || 1),
+    modifiers: {
+      extras: Array.isArray(modifiers.extras) ? modifiers.extras : [],
+      options: Array.isArray(modifiers.options) ? modifiers.options : [],
+      note: modifiers.note || '',
+    },
+    lineTotal: Number(item.lineTotal || 0),
+  }
 }
 
 export async function findOrder(orderId) {
