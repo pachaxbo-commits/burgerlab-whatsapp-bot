@@ -90,6 +90,12 @@ const whatsapp = new WhatsappClient({
 
       if (result.intent === 'order_ready' && result.items.length > 0) {
         const orderInput = buildOrderInput({ result, chatId })
+        if (orderInput.fulfillmentType === 'delivery' && orderInput.deliveryQuoteStatus === 'missing_location') {
+          const reply = 'Para cotizar el envio automaticamente necesito que me mandes tu ubicacion de WhatsApp. Asi calculo la distancia y te paso el total con envio.'
+          conversations.add(chatId, 'bot', reply)
+          await whatsapp.sendText(chatId, reply)
+          return
+        }
         const summary = buildOrderSummary(orderInput)
         conversations.setPendingOrder(chatId, orderInput, summary)
         const reply = `${summary}\n\nConfirmas el pedido?`
@@ -197,11 +203,22 @@ function buildOrderInput({ result, chatId }) {
     }
   })
 
-  const total = items.reduce((sum, item) => sum + item.lineTotal, 0)
+  const productSubtotal = items.reduce((sum, item) => sum + item.lineTotal, 0)
+  const deliveryQuote =
+    result.fulfillmentType === 'delivery'
+      ? buildDeliveryQuote(result.deliveryAddress)
+      : null
+  const deliveryFee = deliveryQuote?.fee ?? 0
+  const total = productSubtotal + deliveryFee
 
   return {
     items,
     total,
+    productSubtotal,
+    deliveryFee,
+    deliveryDistanceKm: deliveryQuote?.distanceKm ?? null,
+    deliveryQuoteStatus: deliveryQuote?.status ?? 'not_needed',
+    deliveryQuoteNote: deliveryQuote?.note ?? '',
     expectedPaymentMethod: result.paymentMethod || 'cash',
     fulfillmentType: result.fulfillmentType || 'pickup',
     customerName: result.customerName,
@@ -209,6 +226,79 @@ function buildOrderInput({ result, chatId }) {
     deliveryAddress: result.deliveryAddress,
     chatId,
   }
+}
+
+function buildDeliveryQuote(deliveryAddress) {
+  const coordinates = extractCoordinates(deliveryAddress)
+  if (!coordinates) {
+    return {
+      status: 'missing_location',
+      fee: 0,
+      distanceKm: null,
+      note: 'No se pudo calcular el envio automaticamente porque falta ubicacion de WhatsApp.',
+    }
+  }
+
+  const distanceKm = roundToOneDecimal(
+    haversineKm(
+      config.restaurantLatitude,
+      config.restaurantLongitude,
+      coordinates.latitude,
+      coordinates.longitude,
+    ),
+  )
+  const fee = getDeliveryFee(distanceKm)
+
+  if (fee === null) {
+    return {
+      status: 'manual_review',
+      fee: 0,
+      distanceKm,
+      note: 'La ubicacion supera el rango automatico de 11.9 km; caja debe revisar la tarifa.',
+    }
+  }
+
+  return {
+    status: 'quoted',
+    fee,
+    distanceKm,
+    note: 'Tarifa calculada por distancia. Puede variar por clima, ruta, subida, trafico o condiciones especiales.',
+  }
+}
+
+function extractCoordinates(text) {
+  const match = String(text || '').match(/q=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/)
+  if (!match) return null
+  return {
+    latitude: Number(match[1]),
+    longitude: Number(match[2]),
+  }
+}
+
+function getDeliveryFee(distanceKm) {
+  if (distanceKm < 0 || distanceKm > 11.9) return null
+  if (distanceKm < 2) return 10
+  return 12 + Math.floor(distanceKm - 2) * 2
+}
+
+function haversineKm(fromLat, fromLng, toLat, toLng) {
+  const earthRadiusKm = 6371
+  const dLat = toRadians(toLat - fromLat)
+  const dLng = toRadians(toLng - fromLng)
+  const lat1 = toRadians(fromLat)
+  const lat2 = toRadians(toLat)
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2
+  return earthRadiusKm * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+}
+
+function toRadians(value) {
+  return (value * Math.PI) / 180
+}
+
+function roundToOneDecimal(value) {
+  return Math.round(value * 10) / 10
 }
 
 function requireToken(req, res, next) {
@@ -310,8 +400,8 @@ function buildOrderSummary(orderInput) {
 
   const deliveryLine =
     orderInput.fulfillmentType === 'delivery'
-      ? `Envio: ${orderInput.deliveryAddress || 'ubicacion/direccion pendiente'}`
-      : 'Recojo en restaurante'
+      ? buildDeliverySummaryLines(orderInput)
+      : ['Recojo en restaurante']
 
   const paymentLabel = {
     cash: 'Efectivo',
@@ -323,10 +413,33 @@ function buildOrderSummary(orderInput) {
     'Te paso el resumen de tu pedido:',
     `Nombre: ${orderInput.customerName}`,
     ...itemLines,
+    `Productos: Bs ${orderInput.productSubtotal ?? orderInput.total}`,
+    ...deliveryLine,
     `Total: Bs ${orderInput.total}`,
     `Pago: ${paymentLabel}`,
-    deliveryLine,
   ].join('\n')
+}
+
+function buildDeliverySummaryLines(orderInput) {
+  const lines = [
+    `Envio: ${orderInput.deliveryAddress || 'ubicacion/direccion pendiente'}`,
+  ]
+
+  if (orderInput.deliveryQuoteStatus === 'quoted') {
+    lines.push(`Distancia aprox.: ${orderInput.deliveryDistanceKm} km`)
+    lines.push(`Costo de envio: Bs ${orderInput.deliveryFee}`)
+    lines.push('Nota: el envio puede subir por clima, ruta, subida, trafico o condiciones especiales.')
+    return lines
+  }
+
+  if (orderInput.deliveryQuoteStatus === 'manual_review') {
+    lines.push(`Distancia aprox.: ${orderInput.deliveryDistanceKm} km`)
+    lines.push('Envio: pendiente de revision por distancia/zona.')
+    return lines
+  }
+
+  lines.push('Envio: pendiente, necesito ubicacion de WhatsApp para cotizar automaticamente.')
+  return lines
 }
 
 function isWithinBusinessHours(now = new Date()) {
