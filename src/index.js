@@ -19,6 +19,8 @@ assertRequiredConfig()
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const menuImagePath = path.resolve(__dirname, '..', 'assets', 'menu-burger-lab.png')
+const deliveryTariffImagePath = path.resolve(__dirname, '..', 'assets', 'delivery-tarifario.png')
+const paymentQrImagePath = path.resolve(__dirname, '..', 'assets', 'qr-pago-burger-lab.png')
 
 let botEnabled = config.botEnabled
 const conversations = new ConversationStore()
@@ -42,7 +44,46 @@ const whatsapp = new WhatsappClient({
     await whatsapp.startTyping(chatId)
 
     try {
+      if (state.awaitingPaymentProof) {
+        if (isPaymentProofMessage(text)) {
+          const orderInput = {
+            ...state.awaitingPaymentProof.orderInput,
+            qrProofReceived: true,
+            paymentReviewNote: 'Cliente envio comprobante QR por WhatsApp. Caja debe revisarlo antes de confirmar pago.',
+          }
+          const created = await createWhatsappOrder(orderInput)
+          conversations.setLastOrder(chatId, created.orderId)
+
+          const reply = [
+            'Perfecto, recibi tu comprobante.',
+            'Voy a pasar tu pedido a caja para que revisen el pago y confirmen el tiempo de salida.',
+          ].join('\n')
+
+          conversations.add(chatId, 'bot', reply)
+          await whatsapp.sendText(chatId, reply)
+          return
+        }
+
+        if (isCancelText(text)) {
+          state.awaitingPaymentProof = null
+          const reply = 'Sin problema. Dejamos el pago pendiente; si quieres continuar, me mandas el comprobante o actualizamos el metodo de pago.'
+          conversations.add(chatId, 'bot', reply)
+          await whatsapp.sendText(chatId, reply)
+          return
+        }
+
+        const reply = 'Para avanzar con tu pedido por QR, por favor enviame el comprobante de pago por este chat. Caja lo revisara antes de confirmar.'
+        conversations.add(chatId, 'bot', reply)
+        await whatsapp.sendText(chatId, reply)
+        return
+      }
+
       if (state.pendingOrder && isConfirmText(text)) {
+        if (state.pendingOrder.orderInput.expectedPaymentMethod === 'qr') {
+          await requestQrPaymentProof(chatId, state.pendingOrder.orderInput, state.pendingOrder.summary)
+          return
+        }
+
         const created = await createWhatsappOrder(state.pendingOrder.orderInput)
         conversations.setLastOrder(chatId, created.orderId)
 
@@ -82,6 +123,16 @@ const whatsapp = new WhatsappClient({
         const caption = 'Claro, te paso nuestro menu. Cuando quieras pedir, mandame tu nombre, pedido, metodo de pago y si es recojo o envio.'
         conversations.add(chatId, 'bot', caption)
         await whatsapp.sendImage(chatId, menuImagePath, caption)
+        return
+      }
+
+      if (isDeliveryPricingRequest(text)) {
+        await sendDeliveryPricingInfo(chatId)
+        return
+      }
+
+      if (isPaymentQrRequest(text) && !state.pendingOrder) {
+        await sendPaymentQrInfo(chatId)
         return
       }
 
@@ -156,6 +207,11 @@ const whatsapp = new WhatsappClient({
       })
 
       if (result.intent === 'confirm_order' && state.pendingOrder) {
+        if (state.pendingOrder.orderInput.expectedPaymentMethod === 'qr') {
+          await requestQrPaymentProof(chatId, state.pendingOrder.orderInput, state.pendingOrder.summary)
+          return
+        }
+
         const created = await createWhatsappOrder(state.pendingOrder.orderInput)
         conversations.setLastOrder(chatId, created.orderId)
 
@@ -172,6 +228,24 @@ const whatsapp = new WhatsappClient({
       if (result.intent === 'cancel_order' && state.pendingOrder) {
         state.pendingOrder = null
         const reply = 'Sin problema. Lo dejamos pendiente; si quieres cambiar algo, mandame el pedido actualizado y lo armamos bien.'
+        conversations.add(chatId, 'bot', reply)
+        await whatsapp.sendText(chatId, reply)
+        return
+      }
+
+      if (result.intent === 'delivery_pricing') {
+        await sendDeliveryPricingInfo(chatId)
+        return
+      }
+
+      if (result.intent === 'payment_qr_request' && !state.pendingOrder) {
+        await sendPaymentQrInfo(chatId)
+        return
+      }
+
+      if (result.intent === 'human_help') {
+        await notifyHumanSupport(chatId, text)
+        const reply = 'Dame un momento, por favor. Voy a pedir apoyo para confirmarte eso correctamente.'
         conversations.add(chatId, 'bot', reply)
         await whatsapp.sendText(chatId, reply)
         return
@@ -275,6 +349,7 @@ app.post('/orders/:orderId/confirmed', requireToken, async (req, res) => {
     buildConfirmationMessage(delayMinutes),
   )
   await markWhatsappConfirmationSent(order)
+  await notifyDeliveryGroupOrderConfirmed(order, delayMinutes)
 
   res.json({ ok: true })
 })
@@ -282,6 +357,101 @@ app.post('/orders/:orderId/confirmed', requireToken, async (req, res) => {
 app.listen(config.port, () => {
   console.log(`Bot API escuchando en http://localhost:${config.port}`)
 })
+
+async function requestQrPaymentProof(chatId, orderInput, summary) {
+  conversations.setAwaitingPaymentProof(chatId, orderInput, summary)
+  const caption = [
+    'Claro, puedes pagar por QR.',
+    'Te paso el QR del restaurante. Por favor envia el comprobante por este chat para registrar tu pedido.',
+    orderInput.fulfillmentType === 'delivery'
+      ? 'Importante: el QR es solo para el pedido. El envio se paga directamente al delivery.'
+      : 'Caja revisara el comprobante antes de confirmar el pedido.',
+  ].join('\n')
+
+  conversations.add(chatId, 'bot', caption)
+  await whatsapp.sendImage(chatId, paymentQrImagePath, caption)
+}
+
+async function sendDeliveryPricingInfo(chatId) {
+  const caption = [
+    'Te paso el tarifario de delivery y la ubicacion de Burger Lab para que puedas estimar el envio.',
+    'El costo final puede variar por zona, clima, subida, ruta o disponibilidad del repartidor.',
+  ].join('\n')
+
+  conversations.add(chatId, 'bot', caption)
+  await whatsapp.sendImage(chatId, deliveryTariffImagePath, caption)
+  await whatsapp.sendLocation(chatId, {
+    latitude: config.restaurantLatitude,
+    longitude: config.restaurantLongitude,
+    name: config.businessName,
+    address: config.restaurantAddress,
+  })
+}
+
+async function sendPaymentQrInfo(chatId) {
+  const caption = [
+    'Claro, puedes pagar por QR.',
+    'Cuando hagas tu pedido te pedire el comprobante por este chat para que caja revise el pago antes de confirmarlo.',
+    'Si es delivery, el envio se paga directamente al repartidor.',
+  ].join('\n')
+
+  conversations.add(chatId, 'bot', caption)
+  await whatsapp.sendImage(chatId, paymentQrImagePath, caption)
+}
+
+async function notifyHumanSupport(chatId, customerMessage) {
+  const targetChatId = await resolveOwnerAlertChatId()
+  if (!targetChatId) return
+
+  const message = [
+    'Intervencion requerida del bot.',
+    `Cliente: ${chatId}`,
+    `Mensaje: ${customerMessage}`,
+    'El bot no respondio ese punto para evitar dar informacion incorrecta.',
+  ].join('\n')
+
+  await whatsapp.sendText(targetChatId, message)
+}
+
+async function notifyDeliveryGroupOrderConfirmed(order, delayMinutes) {
+  if (order.fulfillmentType !== 'delivery') return
+
+  const targetChatId = await resolveDeliveryGroupChatId()
+  if (!targetChatId) return
+
+  const items = (order.items || [])
+    .map((item) => {
+      const extras = item.modifiers?.extras?.length ? ` Extras: ${item.modifiers.extras.map((extra) => extra.name).join(', ')}` : ''
+      const options = item.modifiers?.options?.length ? ` Opciones: ${item.modifiers.options.join(', ')}` : ''
+      const note = item.modifiers?.note ? ` Obs: ${item.modifiers.note}` : ''
+      return `- ${item.quantity} x ${item.name}${extras}${options}${note}`
+    })
+    .join('\n')
+
+  const message = [
+    `Delivery confirmado ${order.displayNumber || ''}`.trim(),
+    `Recoger en ${delayMinutes} minutos.`,
+    `Cliente: ${order.customerName || 'Cliente WhatsApp'}`,
+    order.customerPhone ? `Telefono: ${order.customerPhone}` : '',
+    `Ubicacion/direccion: ${order.deliveryAddress || 'Pendiente en caja'}`,
+    'Pedido:',
+    items,
+    `Total productos: Bs ${order.productSubtotal ?? order.total}`,
+    'El envio lo cobra el delivery al cliente.',
+  ].filter(Boolean).join('\n')
+
+  await whatsapp.sendText(targetChatId, message)
+}
+
+async function resolveDeliveryGroupChatId() {
+  if (config.deliveryGroupId) return config.deliveryGroupId
+  return whatsapp.findGroupIdBySubject(config.deliveryGroupName)
+}
+
+async function resolveOwnerAlertChatId() {
+  if (config.ownerAlertChatId) return config.ownerAlertChatId
+  return whatsapp.findGroupIdBySubject(config.ownerAlertGroupName)
+}
 
 async function getCachedCatalog() {
   const now = Date.now()
@@ -303,7 +473,7 @@ function mergeOrderDraft(previous, result, text) {
     customerPhone: result.customerPhone || previous?.customerPhone || '',
     paymentMethod: result.paymentMethod || inferred.paymentMethod || previous?.paymentMethod || null,
     fulfillmentType: result.fulfillmentType || inferred.fulfillmentType || previous?.fulfillmentType || null,
-    deliveryAddress: result.deliveryAddress || previous?.deliveryAddress || '',
+    deliveryAddress: result.deliveryAddress || inferred.deliveryAddress || previous?.deliveryAddress || '',
   }
 }
 
@@ -321,22 +491,33 @@ function inferFieldsFromText(text) {
     : /\b(recojo|recoger|retiro|retirar|local)\b/.test(normalized)
       ? 'pickup'
       : null
-  const possibleName = String(text || '')
-    .split(',')
+  const rawText = String(text || '')
+  const deliveryAddress = /https:\/\/maps\.google\.com\/\?q=-?\d+(?:\.\d+)?,-?\d+(?:\.\d+)?/i.test(rawText)
+    ? rawText.match(/https:\/\/maps\.google\.com\/\?q=-?\d+(?:\.\d+)?,-?\d+(?:\.\d+)?/i)?.[0] || rawText
+    : ''
+  const introducedName = rawText.match(/\b(?:soy|nombre|me llamo)\s+([\p{L}]{3,}(?:\s+[\p{L}]{3,})?)/iu)?.[1]?.trim()
+  const possibleName = rawText
+    .split(/[\n,]/)
     .map((part) => part.trim())
-    .find((part) => /^[\p{L}]{3,}(?:\s+[\p{L}]{3,})?$/u.test(part) && !/qr|efectivo|mixto/i.test(part))
-  const introducedName = String(text || '').match(/\b(?:soy|nombre|me llamo)\s+([\p{L}]{3,}(?:\s+[\p{L}]{3,})?)/iu)?.[1]?.trim()
+    .find((part) => isLikelyCustomerName(part))
 
   return {
     paymentMethod,
     fulfillmentType,
     customerName: introducedName || possibleName || '',
+    deliveryAddress,
   }
 }
 
+function isLikelyCustomerName(value) {
+  if (!/^[\p{L}]{3,}(?:\s+[\p{L}]{3,})?$/u.test(value)) return false
+  const normalized = normalizeText(value)
+  if (/\b(qr|efectivo|mixto|pago|envio|delivery|domicilio|recojo|retiro|local|ubicacion|whatsapp|burger|hamburguesa|papas|coca|fanta|sprite|agua)\b/.test(normalized)) return false
+  return true
+}
 function hasUsefulInferredFields(text) {
   const inferred = inferFieldsFromText(text)
-  return Boolean(inferred.customerName || inferred.paymentMethod || inferred.fulfillmentType)
+  return Boolean(inferred.customerName || inferred.paymentMethod || inferred.fulfillmentType || inferred.deliveryAddress)
 }
 
 function buildEmptyAiResult() {
@@ -369,7 +550,7 @@ function inferSimpleOrderFromCatalog(text, catalog) {
       name: product.name,
       basePrice: Number(product.price || 0),
       quantity: inferQuantityBeforeProduct(normalized, productName),
-      note: '',
+      note: inferItemNoteFromText(normalized),
       options: [],
       extras: [],
     })
@@ -389,6 +570,27 @@ function inferQuantityBeforeProduct(normalizedText, normalizedProductName) {
   if (/\b(dos)\s*$/.test(before)) return 2
   if (/\b(tres)\s*$/.test(before)) return 3
   return 1
+}
+
+function inferItemNoteFromText(normalizedText) {
+  const notes = []
+  const checks = [
+    ['sin mantequilla', /\bsin mantequilla\b/],
+    ['sin salsa', /\bsin salsa\b/],
+    ['sin salsa de la casa', /\bsin salsa de la casa\b/],
+    ['sin salsa bbq', /\bsin (salsa )?bbq\b/],
+    ['sin cebolla', /\bsin cebolla\b/],
+    ['sin queso', /\bsin queso\b/],
+    ['salsa aparte', /\bsalsa aparte\b/],
+    ['doble llajua', /\b(doble|extra)\s+(llajua|salsa picante)\b/],
+    ['llajua', /\b(llajua|salsa picante|picante)\b/],
+  ]
+
+  for (const [label, pattern] of checks) {
+    if (pattern.test(normalizedText) && !notes.includes(label)) notes.push(label)
+  }
+
+  return notes.join(', ')
 }
 
 function getMissingOrderFields(result) {
@@ -440,11 +642,7 @@ function buildOrderInput({ result, chatId }) {
   })
 
   const productSubtotal = items.reduce((sum, item) => sum + item.lineTotal, 0)
-  const deliveryQuote =
-    result.fulfillmentType === 'delivery'
-      ? buildDeliveryQuote(result.deliveryAddress)
-      : null
-  const deliveryFee = deliveryQuote?.fee ?? 0
+  const deliveryFee = 0
   const total = productSubtotal
 
   return {
@@ -452,9 +650,9 @@ function buildOrderInput({ result, chatId }) {
     total,
     productSubtotal,
     deliveryFee,
-    deliveryDistanceKm: deliveryQuote?.distanceKm ?? null,
-    deliveryQuoteStatus: deliveryQuote?.status ?? 'not_needed',
-    deliveryQuoteNote: deliveryQuote?.note ?? '',
+    deliveryDistanceKm: null,
+    deliveryQuoteStatus: result.fulfillmentType === 'delivery' ? 'manual_review' : 'not_needed',
+    deliveryQuoteNote: result.fulfillmentType === 'delivery' ? 'El envio lo cobra el delivery directamente al cliente.' : '',
     expectedPaymentMethod: result.paymentMethod || 'cash',
     fulfillmentType: result.fulfillmentType || 'pickup',
     customerName: result.customerName,
@@ -462,79 +660,6 @@ function buildOrderInput({ result, chatId }) {
     deliveryAddress: result.deliveryAddress,
     chatId,
   }
-}
-
-function buildDeliveryQuote(deliveryAddress) {
-  const coordinates = extractCoordinates(deliveryAddress)
-  if (!coordinates) {
-    return {
-      status: 'missing_location',
-      fee: 0,
-      distanceKm: null,
-      note: 'No se pudo calcular el envio automaticamente porque falta ubicacion de WhatsApp.',
-    }
-  }
-
-  const distanceKm = roundToOneDecimal(
-    haversineKm(
-      config.restaurantLatitude,
-      config.restaurantLongitude,
-      coordinates.latitude,
-      coordinates.longitude,
-    ),
-  )
-  const fee = getDeliveryFee(distanceKm)
-
-  if (fee === null) {
-    return {
-      status: 'manual_review',
-      fee: 0,
-      distanceKm,
-      note: 'La ubicacion supera el rango automatico de 11.9 km; caja debe revisar la tarifa.',
-    }
-  }
-
-  return {
-    status: 'quoted',
-    fee,
-    distanceKm,
-    note: 'Tarifa calculada por distancia. Puede variar por clima, ruta, subida, trafico o condiciones especiales.',
-  }
-}
-
-function extractCoordinates(text) {
-  const match = String(text || '').match(/q=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/)
-  if (!match) return null
-  return {
-    latitude: Number(match[1]),
-    longitude: Number(match[2]),
-  }
-}
-
-function getDeliveryFee(distanceKm) {
-  if (distanceKm < 0 || distanceKm > 11.9) return null
-  if (distanceKm < 2) return 10
-  return 12 + Math.floor(distanceKm - 2) * 2
-}
-
-function haversineKm(fromLat, fromLng, toLat, toLng) {
-  const earthRadiusKm = 6371
-  const dLat = toRadians(toLat - fromLat)
-  const dLng = toRadians(toLng - fromLng)
-  const lat1 = toRadians(fromLat)
-  const lat2 = toRadians(toLat)
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2
-  return earthRadiusKm * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
-}
-
-function toRadians(value) {
-  return (value * Math.PI) / 180
-}
-
-function roundToOneDecimal(value) {
-  return Math.round(value * 10) / 10
 }
 
 function requireToken(req, res, next) {
@@ -561,13 +686,28 @@ function isMenuRequest(text) {
   return /\b(menu|carta|precios|precio|hamburguesas|promos|promociones|catalogo)\b/.test(normalized)
 }
 
+function isDeliveryPricingRequest(text) {
+  const normalized = normalizeText(text)
+  return /\b(cuanto|cuanto sale|costo|precio|tarifa|tarifario|vale)\b/.test(normalized) && /\b(envio|delivery|moto|repartidor)\b/.test(normalized)
+}
+
+function isPaymentQrRequest(text) {
+  const normalized = normalizeText(text)
+  return /\b(qr|codigo|comprobante|pagar|pago)\b/.test(normalized) && /\b(qr|codigo)\b/.test(normalized)
+}
+
+function isPaymentProofMessage(text) {
+  const normalized = normalizeText(text)
+  return normalized === '[imagen_recibida]' || /\b(comprobante|pagado|pague|ya pague|transferencia|qr listo|te mande)\b/.test(normalized)
+}
+
 function isRestaurantLocationRequest(text) {
   const normalized = text
     .normalize('NFD')
     .replace(/\p{Diacritic}/gu, '')
     .toLowerCase()
 
-  const isDeliveryContext = /\b(envio|delivery|pedido|pedir|confirmo|mi ubicacion|mi direccion|te mande|mande|mandé)\b/.test(normalized)
+  const isDeliveryContext = /\b(envio|delivery|pedido|pedir|confirmo|mi ubicacion|mi direccion|te mande|mande|mandÃƒÂ©)\b/.test(normalized)
   if (isDeliveryContext) return false
 
   return (
@@ -597,6 +737,7 @@ function startConfirmationNoticePolling() {
           buildConfirmationMessage(delayMinutes),
         )
         await markWhatsappConfirmationSent(order)
+        await notifyDeliveryGroupOrderConfirmed(order, delayMinutes)
       }
 
       const dispatchOrders = await getWhatsappDeliveryOrdersPendingDispatchNotice()
@@ -688,20 +829,7 @@ function buildDeliverySummaryLines(orderInput) {
     `Envio: ${orderInput.deliveryAddress || 'ubicacion/direccion pendiente'}`,
   ]
 
-  if (orderInput.deliveryQuoteStatus === 'quoted') {
-    lines.push(`Distancia aprox.: ${orderInput.deliveryDistanceKm} km`)
-    lines.push(`Envio estimado: Bs ${orderInput.deliveryFee} (se paga al delivery)`)
-    lines.push('Nota: el envio puede subir por clima, ruta, subida, trafico o condiciones especiales.')
-    return lines
-  }
-
-  if (orderInput.deliveryQuoteStatus === 'manual_review') {
-    lines.push(`Distancia aprox.: ${orderInput.deliveryDistanceKm} km`)
-    lines.push('Envio: pendiente de revision por distancia/zona.')
-    return lines
-  }
-
-  lines.push('Envio: pendiente, necesito ubicacion de WhatsApp para cotizar automaticamente.')
+  lines.push('Envio: se paga directamente al delivery.')
   return lines
 }
 

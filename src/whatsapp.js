@@ -73,6 +73,14 @@ export class WhatsappClient {
     })
   }
 
+  async findGroupIdBySubject(subject) {
+    if (!this.sock || !subject) return ''
+    const groups = await this.sock.groupFetchAllParticipating().catch(() => ({}))
+    const normalizedTarget = normalizeText(subject)
+    const group = Object.values(groups).find((item) => normalizeText(item?.subject) === normalizedTarget)
+    return group?.id || ''
+  }
+
   async handleMessages(event) {
     if (event.type !== 'notify') return
 
@@ -116,6 +124,11 @@ export class WhatsappClient {
 }
 
 function extractText(message) {
+  if (message.message?.imageMessage) {
+    const caption = message.message.imageMessage.caption || ''
+    return caption.trim() || '[imagen_recibida]'
+  }
+
   const location = message.message?.locationMessage
   if (location) {
     const latitude = location.degreesLatitude
@@ -130,6 +143,14 @@ function extractText(message) {
     message.message?.imageMessage?.caption ||
     ''
   ).trim()
+}
+
+function normalizeText(text) {
+  return String(text || '')
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .trim()
+    .toLowerCase()
 }
 
 function getTypingDelay(text) {

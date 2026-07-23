@@ -76,6 +76,8 @@ export async function createWhatsappOrder(input) {
       payment: buildPendingPayment(input.expectedPaymentMethod),
       paymentStatus: 'pending',
       paymentMethod: null,
+      qrProofReceived: Boolean(input.qrProofReceived),
+      paymentReviewNote: input.paymentReviewNote || '',
       expectedPaymentMethod: input.expectedPaymentMethod,
       orderSource: 'whatsapp',
       fulfillmentType: input.fulfillmentType,

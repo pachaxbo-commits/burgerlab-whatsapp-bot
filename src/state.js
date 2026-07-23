@@ -9,6 +9,7 @@ export class ConversationStore {
         messages: [],
         lastOrderId: null,
         pendingOrder: null,
+        awaitingPaymentProof: null,
         orderDraft: null,
       })
     }
@@ -26,17 +27,26 @@ export class ConversationStore {
     const state = this.get(chatId)
     state.lastOrderId = orderId
     state.pendingOrder = null
+    state.awaitingPaymentProof = null
     state.orderDraft = null
   }
 
   setPendingOrder(chatId, orderInput, summary) {
     const state = this.get(chatId)
     state.pendingOrder = { orderInput, summary }
+    state.awaitingPaymentProof = null
     state.orderDraft = null
   }
 
   setOrderDraft(chatId, draft) {
     const state = this.get(chatId)
     state.orderDraft = draft
+  }
+
+  setAwaitingPaymentProof(chatId, orderInput, summary) {
+    const state = this.get(chatId)
+    state.awaitingPaymentProof = { orderInput, summary }
+    state.pendingOrder = null
+    state.orderDraft = null
   }
 }
