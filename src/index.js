@@ -22,6 +22,8 @@ const menuImagePath = path.resolve(__dirname, '..', 'assets', 'menu-burger-lab.p
 
 let botEnabled = config.botEnabled
 const conversations = new ConversationStore()
+let catalogCache = null
+let catalogCacheAt = 0
 
 const whatsapp = new WhatsappClient({
   onMessage: async ({ chatId, text }) => {
@@ -37,6 +39,7 @@ const whatsapp = new WhatsappClient({
 
     conversations.add(chatId, 'cliente', text)
     const state = conversations.get(chatId)
+    await whatsapp.startTyping(chatId)
 
     try {
       if (state.pendingOrder && isConfirmText(text)) {
@@ -95,7 +98,7 @@ const whatsapp = new WhatsappClient({
         return
       }
 
-      const catalog = await getCatalog()
+      const catalog = await getCachedCatalog()
       const quickResult = inferSimpleOrderFromCatalog(text, catalog)
       if (quickResult.items.length || (state.orderDraft?.items?.length && hasUsefulInferredFields(text))) {
         const baseDraft = state.orderDraft || buildEmptyAiResult()
@@ -279,6 +282,17 @@ app.post('/orders/:orderId/confirmed', requireToken, async (req, res) => {
 app.listen(config.port, () => {
   console.log(`Bot API escuchando en http://localhost:${config.port}`)
 })
+
+async function getCachedCatalog() {
+  const now = Date.now()
+  if (catalogCache && now - catalogCacheAt < 120000) {
+    return catalogCache
+  }
+
+  catalogCache = await getCatalog()
+  catalogCacheAt = now
+  return catalogCache
+}
 
 function mergeOrderDraft(previous, result, text) {
   const inferred = inferFieldsFromText(text)

@@ -42,6 +42,11 @@ export class WhatsappClient {
     await this.sock.sendMessage(chatId, { text })
   }
 
+  async startTyping(chatId) {
+    if (!this.sock) return
+    await this.sock.sendPresenceUpdate('composing', chatId).catch(() => undefined)
+  }
+
   async sendImage(chatId, imagePath, caption) {
     if (!this.sock) throw new Error('WhatsApp no esta iniciado.')
     await this.sock.sendPresenceUpdate('composing', chatId)
