@@ -656,10 +656,11 @@ function buildEmptyAiResult() {
 
 function inferSimpleOrderFromCatalog(text, catalog) {
   const normalized = normalizeText(text)
+  const flexibleItems = inferFlexibleMenuItems(normalized, catalog)
   const products = [...(catalog.products || [])]
     .filter((product) => product.isVisible !== false && product.isActive !== false)
     .sort((left, right) => normalizeText(right.name).length - normalizeText(left.name).length)
-  const matched = []
+  const matched = [...flexibleItems]
 
   for (const product of products) {
     const productName = normalizeText(product.name)
@@ -680,6 +681,67 @@ function inferSimpleOrderFromCatalog(text, catalog) {
     ...buildEmptyAiResult(),
     items: matched,
   }
+}
+
+function inferFlexibleMenuItems(normalizedText, catalog) {
+  const matched = []
+
+  const addProduct = (productId, quantity = 1, note = inferItemNoteFromText(normalizedText)) => {
+    const product = findCatalogProduct(catalog, productId)
+    if (!product || matched.some((item) => item.productId === product.id)) return
+    matched.push({
+      productId: product.id,
+      name: product.name,
+      basePrice: Number(product.price || 0),
+      quantity,
+      note,
+      options: [],
+      extras: inferExtrasFromText(normalizedText, product),
+    })
+  }
+
+  if (/\bbbq\b/.test(normalizedText)) {
+    const size = /\bdoble\b/.test(normalizedText) ? 'doble' : 'simple'
+    const papas = /\bsin\s+papas?\b/.test(normalizedText) ? 'sin-papas' : 'con-papas'
+    addProduct(`bbq-${size}-${papas}`, inferQuantityBeforeProduct(normalizedText, 'bbq'))
+  }
+
+  if (/\b(burger lab|burguer lab|burger|hamburguesa)\b/.test(normalizedText) && !/\bbbq\b/.test(normalizedText)) {
+    const size = /\bdoble\b/.test(normalizedText) ? 'doble' : 'simple'
+    const papas = /\bsin\s+papas?\b/.test(normalizedText) ? 'sin-papas' : 'con-papas'
+    addProduct(`burger-lab-${size}-${papas}`, inferQuantityBeforeProduct(normalizedText, 'burger'))
+  }
+
+  if (/\bcoca\b/.test(normalizedText)) {
+    addProduct(/\bzero\b/.test(normalizedText) ? 'coca-cola-zero-300-ml' : 'coca-cola-300-ml', inferQuantityBeforeProduct(normalizedText, 'coca'))
+  }
+
+  if (/\bsprite\b/.test(normalizedText)) addProduct('sprite-300-ml', inferQuantityBeforeProduct(normalizedText, 'sprite'))
+  if (/\bfanta\b/.test(normalizedText)) {
+    const id = /\bpapaya\b/.test(normalizedText)
+      ? 'fanta-papaya-300-ml'
+      : /\bguarana\b/.test(normalizedText)
+        ? 'fanta-guarana-300-ml'
+        : 'fanta-naranja-300-ml'
+    addProduct(id, inferQuantityBeforeProduct(normalizedText, 'fanta'))
+  }
+
+  if (/\bagua\b/.test(normalizedText)) addProduct('agua-vital-350-ml', inferQuantityBeforeProduct(normalizedText, 'agua'))
+  if (/\bmoco(?:chinchi|nchinchi|conchinchi)\b/.test(normalizedText)) {
+    addProduct(/\b(2\s*l|2l|dos\s+litros?)\b/.test(normalizedText) ? 'pulpa-de-moconchinchi-2-litros' : 'pulpa-de-moconchinchi-330-ml', inferQuantityBeforeProduct(normalizedText, 'moco'))
+  }
+  if (/\btamarindo\b/.test(normalizedText)) {
+    addProduct(/\b(2\s*l|2l|dos\s+litros?)\b/.test(normalizedText) ? 'tamarindo-2-litros' : 'tamarindo-330-ml', inferQuantityBeforeProduct(normalizedText, 'tamarindo'))
+  }
+  if (/\bjamaica\b/.test(normalizedText)) {
+    addProduct(/\b(2\s*l|2l|dos\s+litros?)\b/.test(normalizedText) ? 'flor-de-jamaica-2-litros' : 'flor-de-jamaica-330-ml', inferQuantityBeforeProduct(normalizedText, 'jamaica'))
+  }
+
+  return matched
+}
+
+function findCatalogProduct(catalog, productId) {
+  return (catalog.products || []).find((product) => product.id === productId && product.isVisible !== false && product.isActive !== false)
 }
 
 function inferQuantityBeforeProduct(normalizedText, normalizedProductName) {
@@ -711,6 +773,20 @@ function inferItemNoteFromText(normalizedText) {
   }
 
   return notes.join(', ')
+}
+
+function inferExtrasFromText(normalizedText, product) {
+  const availableExtras = Array.isArray(product.extras) ? product.extras : []
+  const extras = []
+
+  for (const extra of availableExtras) {
+    const extraName = normalizeText(extra.name)
+    if (!extraName) continue
+    if (extraName === 'salsa golf' && /\b(salsa\s+)?golf\b/.test(normalizedText)) extras.push(extra)
+    if (extraName === 'salsa bbq' && /\bsalsa\s+bbq\b/.test(normalizedText)) extras.push(extra)
+  }
+
+  return extras
 }
 
 function getMissingOrderFields(result) {
