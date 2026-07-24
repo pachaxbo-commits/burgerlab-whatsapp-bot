@@ -272,7 +272,7 @@ export async function markWhatsappConfirmationSent(order) {
     })
 }
 
-export async function markWhatsappDispatchSent(order, messageKey) {
+export async function markWhatsappDispatchSent(order) {
   await db
     .collection('restaurants')
     .doc(config.restaurantId)
@@ -282,40 +282,6 @@ export async function markWhatsappDispatchSent(order, messageKey) {
     .doc(order.id)
     .update({
       whatsappDispatchSentAt: FieldValue.serverTimestamp(),
-      whatsappDispatchMessageKey: messageKey || null,
-      updatedAt: FieldValue.serverTimestamp(),
-    })
-}
-
-export async function getWhatsappOrdersWithUndoneDispatch() {
-  const todayKey = getTodayKey()
-  const snap = await db
-    .collection('restaurants')
-    .doc(config.restaurantId)
-    .collection('days')
-    .doc(todayKey)
-    .collection('orders')
-    .where('orderSource', '==', 'whatsapp')
-    .limit(50)
-    .get()
-
-  return snap.docs
-    .map((doc) => ({ id: doc.id, dayKey: todayKey, ...doc.data() }))
-    .filter((order) => order.status !== 'delivered')
-    .filter((order) => order.whatsappDispatchSentAt)
-}
-
-export async function clearWhatsappDispatchSent(order) {
-  await db
-    .collection('restaurants')
-    .doc(config.restaurantId)
-    .collection('days')
-    .doc(order.dayKey || getTodayKey())
-    .collection('orders')
-    .doc(order.id)
-    .update({
-      whatsappDispatchSentAt: FieldValue.delete(),
-      whatsappDispatchMessageKey: FieldValue.delete(),
       updatedAt: FieldValue.serverTimestamp(),
     })
 }

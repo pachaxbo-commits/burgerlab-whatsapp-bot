@@ -82,11 +82,6 @@ export class WhatsappClient {
     })
   }
 
-  async deleteMessage(chatId, key) {
-    if (!this.sock) throw new Error('WhatsApp no esta iniciado.')
-    await this.sock.sendMessage(chatId, { delete: key })
-  }
-
   async findGroupIdBySubject(subject) {
     if (!this.sock || !subject) return ''
     const groups = await this.sock.groupFetchAllParticipating().catch(() => ({}))

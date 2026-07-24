@@ -13,8 +13,6 @@ import {
   getWhatsappDeliveryOrdersPendingDispatchNotice,
   markWhatsappConfirmationSent,
   markWhatsappDispatchSent,
-  getWhatsappOrdersWithUndoneDispatch,
-  clearWhatsappDispatchSent,
   testFirestoreWrite,
 } from './firebase.js'
 import { understandMessage } from './gemini.js'
@@ -1153,7 +1151,6 @@ function isRestaurantLocationRequest(text) {
 
 function startConfirmationNoticePolling() {
   let isChecking = false
-  let isCheckingUndo = false
   let firestoreBackoffUntil = 0
   let firestoreBackoffMs = 15000
 
@@ -1196,18 +1193,11 @@ function startConfirmationNoticePolling() {
         const chatId = order.whatsappChatId || phoneToChatId(order.customerPhone)
         if (!chatId) continue
 
-        const sent = await whatsapp.sendText(
+        await whatsapp.sendText(
           chatId,
           'Tu pedido ya salio para delivery. Por favor, este atento al telefono para recibirlo. Gracias por pedir en Burger Lab.',
         )
-        const messageKey = sent?.key ? {
-          remoteJid: sent.key.remoteJid,
-          fromMe: sent.key.fromMe,
-          id: sent.key.id,
-          ...(sent.key.participant ? { participant: sent.key.participant } : {})
-        } : null
-
-        await markWhatsappDispatchSent(order, messageKey)
+        await markWhatsappDispatchSent(order)
       }
       registerFirestoreSuccess()
     } catch (error) {
@@ -1218,42 +1208,8 @@ function startConfirmationNoticePolling() {
     }
   }
 
-  const checkUndo = async () => {
-    if (isCheckingUndo || !botEnabled || !whatsapp.connected || Date.now() < firestoreBackoffUntil || !isWithinBusinessHours()) return
-    isCheckingUndo = true
-
-    try {
-      const undoneOrders = await getWhatsappOrdersWithUndoneDispatch()
-      for (const order of undoneOrders) {
-        if (order.whatsappDispatchMessageKey) {
-          const chatId = order.whatsappChatId || phoneToChatId(order.customerPhone)
-          if (chatId) {
-            try {
-              await whatsapp.deleteMessage(chatId, order.whatsappDispatchMessageKey)
-            } catch (err) {
-              console.error('Error deleting dispatch message:', err)
-            }
-          }
-        }
-        await clearWhatsappDispatchSent(order)
-      }
-      registerFirestoreSuccess()
-    } catch (error) {
-      registerFirestoreFailure(error)
-      if (!isQuotaExceededError(error)) console.error('Error revisando pedidos con deshacer pendiente:', error)
-    } finally {
-      isCheckingUndo = false
-    }
-  }
-
   setInterval(check, 8000)
   setTimeout(check, 1500)
-
-  // El botón "Deshacer" es una acción manual poco frecuente: no necesita revisarse cada pocos segundos.
-  // Esta consulta antes traía TODOS los pedidos de WhatsApp del día en cada ciclo, multiplicando muchísimo
-  // las lecturas de Firestore y agotando la cuota del proyecto.
-  setInterval(checkUndo, 30000)
-  setTimeout(checkUndo, 4000)
 }
 
 function buildConfirmationMessage(delayMinutes) {
