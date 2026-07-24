@@ -3,6 +3,7 @@ import makeWASocket, {
   fetchLatestBaileysVersion,
   useMultiFileAuthState,
 } from '@whiskeysockets/baileys'
+import fs from 'node:fs/promises'
 import qrcode from 'qrcode-terminal'
 import QRCode from 'qrcode'
 import pino from 'pino'
@@ -51,10 +52,17 @@ export class WhatsappClient {
   async sendImage(chatId, imagePath, caption) {
     if (!this.sock) throw new Error('WhatsApp no esta iniciado.')
     await this.sock.sendPresenceUpdate('composing', chatId)
-    await sleep(3000)
+    await sleep(1000)
     await this.sock.sendPresenceUpdate('paused', chatId)
+    let imagePayload
+    try {
+      imagePayload = await fs.readFile(imagePath)
+    } catch (e) {
+      console.error('Error leyendo archivo de imagen:', e)
+      imagePayload = { url: imagePath }
+    }
     return await this.sock.sendMessage(chatId, {
-      image: { url: imagePath },
+      image: imagePayload,
       caption,
     })
   }
@@ -62,7 +70,7 @@ export class WhatsappClient {
   async sendLocation(chatId, { latitude, longitude, name, address }) {
     if (!this.sock) throw new Error('WhatsApp no esta iniciado.')
     await this.sock.sendPresenceUpdate('composing', chatId)
-    await sleep(3000)
+    await sleep(1000)
     await this.sock.sendPresenceUpdate('paused', chatId)
     return await this.sock.sendMessage(chatId, {
       location: {
@@ -178,8 +186,9 @@ function normalizeText(text) {
 }
 
 function getTypingDelay(text) {
-  const base = 3000
-  const perChar = Math.min(text.length * 10, 2000)
+  const str = String(text || '')
+  const base = 1000
+  const perChar = Math.min(str.length * 8, 1200)
   return base + perChar
 }
 
