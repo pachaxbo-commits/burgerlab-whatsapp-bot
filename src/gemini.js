@@ -11,6 +11,12 @@ const nullableEnum = (values) =>
     return value
   }, z.enum(values).nullable().default(null))
 
+const numberOrDefault = (fallback) =>
+  z.preprocess((value) => {
+    const num = Number(value)
+    return Number.isFinite(num) ? num : fallback
+  }, z.number())
+
 const orderSchema = z.object({
   intent: z.enum(['greeting', 'question', 'order_draft', 'order_ready', 'confirm_order', 'cancel_order', 'delivery_pricing', 'payment_qr_request', 'human_help', 'other']),
   reply: z.string(),
@@ -25,11 +31,11 @@ const orderSchema = z.object({
       z.object({
         productId: z.string(),
         name: z.string(),
-        basePrice: z.number(),
-        quantity: z.number().int().positive(),
+        basePrice: numberOrDefault(0),
+        quantity: numberOrDefault(1).transform((value) => (value > 0 ? Math.round(value) : 1)),
         note: z.string().default(''),
         options: z.array(z.string()).default([]),
-        extras: z.array(z.object({ id: z.string(), name: z.string(), price: z.number() })).default([]),
+        extras: z.array(z.object({ id: z.string(), name: z.string(), price: numberOrDefault(0) })).default([]),
       }),
     )
     .default([]),
