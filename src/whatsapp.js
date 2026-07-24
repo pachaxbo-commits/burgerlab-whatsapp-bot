@@ -38,9 +38,9 @@ export class WhatsappClient {
 
   async sendText(chatId, text) {
     if (!this.sock) throw new Error('WhatsApp no esta iniciado.')
-    await this.sock.sendPresenceUpdate('composing', chatId)
+    await this.sock.sendPresenceUpdate('composing', chatId).catch(() => undefined)
     await sleep(getTypingDelay(text))
-    await this.sock.sendPresenceUpdate('paused', chatId)
+    await this.sock.sendPresenceUpdate('paused', chatId).catch(() => undefined)
     return await this.sock.sendMessage(chatId, { text })
   }
 
@@ -51,9 +51,9 @@ export class WhatsappClient {
 
   async sendImage(chatId, imagePath, caption) {
     if (!this.sock) throw new Error('WhatsApp no esta iniciado.')
-    await this.sock.sendPresenceUpdate('composing', chatId)
+    await this.sock.sendPresenceUpdate('composing', chatId).catch(() => undefined)
     await sleep(1000)
-    await this.sock.sendPresenceUpdate('paused', chatId)
+    await this.sock.sendPresenceUpdate('paused', chatId).catch(() => undefined)
     let imagePayload
     try {
       imagePayload = await fs.readFile(imagePath)
@@ -69,9 +69,9 @@ export class WhatsappClient {
 
   async sendLocation(chatId, { latitude, longitude, name, address }) {
     if (!this.sock) throw new Error('WhatsApp no esta iniciado.')
-    await this.sock.sendPresenceUpdate('composing', chatId)
+    await this.sock.sendPresenceUpdate('composing', chatId).catch(() => undefined)
     await sleep(1000)
-    await this.sock.sendPresenceUpdate('paused', chatId)
+    await this.sock.sendPresenceUpdate('paused', chatId).catch(() => undefined)
     return await this.sock.sendMessage(chatId, {
       location: {
         degreesLatitude: latitude,

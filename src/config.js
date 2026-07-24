@@ -10,7 +10,7 @@ export const config = {
   port: Number(process.env.PORT || 3010),
   dataDir: path.resolve(process.env.DATA_DIR || '.'),
   openaiApiKey: process.env.OPENAI_API_KEY || '',
-  openaiModel: process.env.OPENAI_MODEL || 'gpt-5.4-mini',
+  openaiModel: process.env.OPENAI_MODEL || 'gpt-4o-mini',
   geminiApiKey: process.env.GEMINI_API_KEY || '',
   geminiModel: process.env.GEMINI_MODEL || 'gemini-3.5-flash',
   firebaseProjectId: process.env.FIREBASE_PROJECT_ID || 'comandero-6907f',
