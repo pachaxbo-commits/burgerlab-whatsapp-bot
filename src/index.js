@@ -817,7 +817,7 @@ function inferSimpleOrderFromCatalog(text, catalog) {
       quantity: inferQuantityBeforeProduct(normalized, productName),
       note: inferItemNoteFromText(normalized),
       options: [],
-      extras: [],
+      extras: inferExtrasFromText(normalized, product, catalog),
     })
   }
 
@@ -840,7 +840,7 @@ function inferFlexibleMenuItems(normalizedText, catalog) {
       quantity,
       note,
       options: [],
-      extras: inferExtrasFromText(normalizedText, product),
+      extras: inferExtrasFromText(normalizedText, product, catalog),
     })
   }
 
@@ -919,18 +919,35 @@ function inferItemNoteFromText(normalizedText) {
   return notes.join(', ')
 }
 
-function inferExtrasFromText(normalizedText, product) {
-  const availableExtras = Array.isArray(product.extras) ? product.extras : []
-  const extras = []
+function inferExtrasFromText(normalizedText, product, catalog) {
+  const availableExtras = [...(Array.isArray(product.extras) ? product.extras : [])]
+  if (product.categoryId === 'hamburguesas' && Array.isArray(catalog?.quickExtras)) {
+    for (const quickExtra of catalog.quickExtras) {
+      if (!availableExtras.some((extra) => extra.id === quickExtra.id)) {
+        availableExtras.push(quickExtra)
+      }
+    }
+  }
 
+  const extras = []
   for (const extra of availableExtras) {
     const extraName = normalizeText(extra.name)
-    if (!extraName) continue
-    if (extraName === 'salsa golf' && /\b(salsa\s+)?golf\b/.test(normalizedText)) extras.push(extra)
-    if (extraName === 'salsa bbq' && /\bsalsa\s+bbq\b/.test(normalizedText)) extras.push(extra)
+    if (!extraName || !normalizedText.includes(extraName)) continue
+    const quantity = inferExtraQuantity(normalizedText, extraName)
+    for (let i = 0; i < quantity; i += 1) extras.push(extra)
   }
 
   return extras
+}
+
+function inferExtraQuantity(normalizedText, normalizedExtraName) {
+  const index = normalizedText.indexOf(normalizedExtraName)
+  const before = index > 0 ? normalizedText.slice(Math.max(0, index - 20), index) : ''
+  if (/\b(doble|extra|dos)\s*(de\s+)?$/.test(before)) return 2
+  if (/\b(triple|tres)\s*(de\s+)?$/.test(before)) return 3
+  const numberMatch = before.match(/\b([2-9])\s*(x|de)?\s*$/)
+  if (numberMatch) return Number(numberMatch[1])
+  return 1
 }
 
 function getMissingOrderFields(result) {
@@ -1130,9 +1147,27 @@ function isRestaurantLocationRequest(text) {
 
 function startConfirmationNoticePolling() {
   let isChecking = false
+  let isCheckingUndo = false
+  let firestoreBackoffUntil = 0
+  let firestoreBackoffMs = 15000
+
+  const isQuotaExceededError = (error) => {
+    const message = String(error?.message || error?.details || '')
+    return error?.code === 8 || /RESOURCE_EXHAUSTED|Quota exceeded/i.test(message)
+  }
+
+  const registerFirestoreFailure = (error) => {
+    if (!isQuotaExceededError(error)) return
+    firestoreBackoffUntil = Date.now() + firestoreBackoffMs
+    firestoreBackoffMs = Math.min(firestoreBackoffMs * 2, 5 * 60 * 1000)
+  }
+
+  const registerFirestoreSuccess = () => {
+    firestoreBackoffMs = 15000
+  }
 
   const check = async () => {
-    if (isChecking || !botEnabled || !whatsapp.connected) return
+    if (isChecking || !botEnabled || !whatsapp.connected || Date.now() < firestoreBackoffUntil) return
     isChecking = true
 
     try {
@@ -1168,7 +1203,20 @@ function startConfirmationNoticePolling() {
 
         await markWhatsappDispatchSent(order, messageKey)
       }
+      registerFirestoreSuccess()
+    } catch (error) {
+      registerFirestoreFailure(error)
+      if (!isQuotaExceededError(error)) console.error('Error revisando confirmaciones pendientes:', error)
+    } finally {
+      isChecking = false
+    }
+  }
 
+  const checkUndo = async () => {
+    if (isCheckingUndo || !botEnabled || !whatsapp.connected || Date.now() < firestoreBackoffUntil) return
+    isCheckingUndo = true
+
+    try {
       const undoneOrders = await getWhatsappOrdersWithUndoneDispatch()
       for (const order of undoneOrders) {
         if (order.whatsappDispatchMessageKey) {
@@ -1183,15 +1231,23 @@ function startConfirmationNoticePolling() {
         }
         await clearWhatsappDispatchSent(order)
       }
+      registerFirestoreSuccess()
     } catch (error) {
-      console.error('Error revisando confirmaciones pendientes:', error)
+      registerFirestoreFailure(error)
+      if (!isQuotaExceededError(error)) console.error('Error revisando pedidos con deshacer pendiente:', error)
     } finally {
-      isChecking = false
+      isCheckingUndo = false
     }
   }
 
-  setInterval(check, 5000)
+  setInterval(check, 8000)
   setTimeout(check, 1500)
+
+  // El botón "Deshacer" es una acción manual poco frecuente: no necesita revisarse cada pocos segundos.
+  // Esta consulta antes traía TODOS los pedidos de WhatsApp del día en cada ciclo, multiplicando muchísimo
+  // las lecturas de Firestore y agotando la cuota del proyecto.
+  setInterval(checkUndo, 30000)
+  setTimeout(checkUndo, 4000)
 }
 
 function buildConfirmationMessage(delayMinutes) {

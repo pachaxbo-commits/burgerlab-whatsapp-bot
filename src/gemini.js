@@ -39,16 +39,7 @@ export async function understandMessage({ message, conversation, catalog }) {
   const prompt = buildPrompt({ message, conversation, catalog })
   let text = '{}'
   if (config.openaiApiKey) {
-    try {
-      text = await generateOpenAiWithRetry(prompt)
-    } catch (openaiError) {
-      console.error('Error con OpenAI API, reintentando con Gemini:', openaiError)
-      if (config.geminiApiKey) {
-        text = (await generateContentWithRetry(prompt)).text || '{}'
-      } else {
-        throw openaiError
-      }
-    }
+    text = await generateOpenAiWithRetry(prompt)
   } else if (config.geminiApiKey) {
     text = (await generateContentWithRetry(prompt)).text || '{}'
   }

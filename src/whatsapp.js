@@ -52,7 +52,7 @@ export class WhatsappClient {
   async sendImage(chatId, imagePath, caption) {
     if (!this.sock) throw new Error('WhatsApp no esta iniciado.')
     await this.sock.sendPresenceUpdate('composing', chatId).catch(() => undefined)
-    await sleep(1000)
+    await sleep(2800)
     await this.sock.sendPresenceUpdate('paused', chatId).catch(() => undefined)
     let imagePayload
     try {
@@ -70,7 +70,7 @@ export class WhatsappClient {
   async sendLocation(chatId, { latitude, longitude, name, address }) {
     if (!this.sock) throw new Error('WhatsApp no esta iniciado.')
     await this.sock.sendPresenceUpdate('composing', chatId).catch(() => undefined)
-    await sleep(1000)
+    await sleep(2800)
     await this.sock.sendPresenceUpdate('paused', chatId).catch(() => undefined)
     return await this.sock.sendMessage(chatId, {
       location: {
@@ -187,8 +187,8 @@ function normalizeText(text) {
 
 function getTypingDelay(text) {
   const str = String(text || '')
-  const base = 1000
-  const perChar = Math.min(str.length * 8, 1200)
+  const base = 2500
+  const perChar = Math.min(str.length * 6, 700)
   return base + perChar
 }
 
