@@ -114,6 +114,7 @@ export class WhatsappClient {
   }
 
   async handleMessages(event) {
+    console.log(`messages.upsert recibido: type=${event.type}, mensajes=${event.messages?.length || 0}`)
     if (event.type !== 'notify') return
 
     for (const message of event.messages) {
@@ -123,7 +124,13 @@ export class WhatsappClient {
       if (!chatId || !text) continue
       if (chatId.endsWith('@g.us')) continue
 
-      await this.onMessage({ chatId, text, raw: message })
+      console.log(`Mensaje de ${chatId}: "${text.slice(0, 80)}" -> procesando...`)
+      try {
+        await this.onMessage({ chatId, text, raw: message })
+        console.log(`Mensaje de ${chatId} procesado sin lanzar error.`)
+      } catch (error) {
+        console.error(`Error no capturado procesando mensaje de ${chatId}:`, error)
+      }
     }
   }
 
