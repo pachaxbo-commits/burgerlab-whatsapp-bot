@@ -338,7 +338,7 @@ const whatsapp = new WhatsappClient({
         return
       }
 
-      if (result.intent === 'human_help' || (result.intent === 'other' && !result.items.length)) {
+      if (result.intent === 'human_help') {
         await notifyHumanSupport(chatId, text)
         return
       }
