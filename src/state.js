@@ -31,8 +31,24 @@ export class ConversationStore {
     const state = this.get(chatId)
     state.messages.push({ role, text, at: Date.now() })
     state.messages = state.messages.slice(-12)
+    state.lastMessageAt = Date.now()
     this.scheduleSave()
     return state
+  }
+
+  isNewSession(chatId, gapMs) {
+    const state = this.byChatId.get(chatId)
+    if (!state || !state.lastMessageAt) return false
+    return Date.now() - state.lastMessageAt > gapMs
+  }
+
+  resetSession(chatId) {
+    const state = this.get(chatId)
+    state.messages = []
+    state.pendingOrder = null
+    state.awaitingPaymentProof = null
+    state.orderDraft = null
+    this.scheduleSave()
   }
 
   setLastOrder(chatId, orderId) {
@@ -91,6 +107,7 @@ function normalizeState(value) {
     pendingOrder: value?.pendingOrder || null,
     awaitingPaymentProof: value?.awaitingPaymentProof || null,
     orderDraft: value?.orderDraft || null,
+    lastMessageAt: Number(value?.lastMessageAt) || 0,
   }
 }
 

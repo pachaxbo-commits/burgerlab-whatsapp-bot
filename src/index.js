@@ -29,6 +29,8 @@ const deliveryTariffImagePath = path.resolve(__dirname, '..', 'assets', 'deliver
 const paymentQrImagePath = path.resolve(__dirname, '..', 'assets', 'qr-pago-burger-lab.png')
 const botVersion = process.env.RAILWAY_GIT_COMMIT_SHA?.slice(0, 7) || 'local'
 
+const SESSION_GAP_MS = 6 * 60 * 60 * 1000
+
 let botEnabled = config.botEnabled
 let acceptingOrders = getSettings().acceptingOrders
 const conversations = new ConversationStore(config.conversationStatePath)
@@ -86,6 +88,10 @@ const whatsapp = new WhatsappClient({
         settings.closedMessage,
       )
       return
+    }
+
+    if (conversations.isNewSession(chatId, SESSION_GAP_MS)) {
+      conversations.resetSession(chatId)
     }
 
     conversations.add(chatId, 'cliente', text)
