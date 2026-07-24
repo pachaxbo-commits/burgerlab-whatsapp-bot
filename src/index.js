@@ -13,6 +13,8 @@ import {
   getWhatsappDeliveryOrdersPendingDispatchNotice,
   markWhatsappConfirmationSent,
   markWhatsappDispatchSent,
+  getWhatsappOrdersWithUndoneDispatch,
+  clearWhatsappDispatchSent,
   testFirestoreWrite,
 } from './firebase.js'
 import { understandMessage } from './gemini.js'
@@ -58,6 +60,7 @@ const fallbackCatalog = {
     { id: 'flor-de-jamaica-330-ml', name: 'Flor de Jamaica 330 ml', price: 5, categoryId: 'refrescos-hervidos', extras: [] },
     { id: 'flor-de-jamaica-2-litros', name: 'Flor de Jamaica 2 Litros', price: 20, categoryId: 'refrescos-hervidos', extras: [] },
   ],
+  quickExtras: [],
 }
 
 const whatsapp = new WhatsappClient({
@@ -335,11 +338,8 @@ const whatsapp = new WhatsappClient({
         return
       }
 
-      if (result.intent === 'human_help') {
+      if (result.intent === 'human_help' || (result.intent === 'other' && !result.items.length)) {
         await notifyHumanSupport(chatId, text)
-        const reply = getSettings().humanHelpMessage
-        conversations.add(chatId, 'bot', reply)
-        await whatsapp.sendText(chatId, reply)
         return
       }
 
@@ -1155,11 +1155,33 @@ function startConfirmationNoticePolling() {
         const chatId = order.whatsappChatId || phoneToChatId(order.customerPhone)
         if (!chatId) continue
 
-        await whatsapp.sendText(
+        const sent = await whatsapp.sendText(
           chatId,
           'Tu pedido ya salio para delivery. Por favor, este atento al telefono para recibirlo. Gracias por pedir en Burger Lab.',
         )
-        await markWhatsappDispatchSent(order)
+        const messageKey = sent?.key ? {
+          remoteJid: sent.key.remoteJid,
+          fromMe: sent.key.fromMe,
+          id: sent.key.id,
+          ...(sent.key.participant ? { participant: sent.key.participant } : {})
+        } : null
+
+        await markWhatsappDispatchSent(order, messageKey)
+      }
+
+      const undoneOrders = await getWhatsappOrdersWithUndoneDispatch()
+      for (const order of undoneOrders) {
+        if (order.whatsappDispatchMessageKey) {
+          const chatId = order.whatsappChatId || phoneToChatId(order.customerPhone)
+          if (chatId) {
+            try {
+              await whatsapp.deleteMessage(chatId, order.whatsappDispatchMessageKey)
+            } catch (err) {
+              console.error('Error deleting dispatch message:', err)
+            }
+          }
+        }
+        await clearWhatsappDispatchSent(order)
       }
     } catch (error) {
       console.error('Error revisando confirmaciones pendientes:', error)

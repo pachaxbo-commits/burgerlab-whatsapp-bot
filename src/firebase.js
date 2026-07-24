@@ -19,9 +19,10 @@ export async function getCatalog() {
     .collection('catalog')
     .doc('current')
 
-  const [categoriesSnap, productsSnap] = await Promise.all([
+  const [categoriesSnap, productsSnap, quickExtrasSnap] = await Promise.all([
     basePath.collection('categories').orderBy('sortOrder', 'asc').get(),
     basePath.collection('products').orderBy('sortOrder', 'asc').get(),
+    basePath.collection('settings').doc('quick_extras').get(),
   ])
 
   const categories = categoriesSnap.docs
@@ -32,7 +33,11 @@ export async function getCatalog() {
     .map((doc) => ({ id: doc.id, ...doc.data() }))
     .filter((product) => product.isActive !== false && product.isVisible !== false && product.availability !== 'soldout')
 
-  return { categories, products }
+  const quickExtras = quickExtrasSnap.exists && Array.isArray(quickExtrasSnap.data().list)
+    ? quickExtrasSnap.data().list
+    : []
+
+  return { categories, products, quickExtras }
 }
 
 export async function createWhatsappOrder(input) {
@@ -267,7 +272,7 @@ export async function markWhatsappConfirmationSent(order) {
     })
 }
 
-export async function markWhatsappDispatchSent(order) {
+export async function markWhatsappDispatchSent(order, messageKey) {
   await db
     .collection('restaurants')
     .doc(config.restaurantId)
@@ -277,6 +282,40 @@ export async function markWhatsappDispatchSent(order) {
     .doc(order.id)
     .update({
       whatsappDispatchSentAt: FieldValue.serverTimestamp(),
+      whatsappDispatchMessageKey: messageKey || null,
+      updatedAt: FieldValue.serverTimestamp(),
+    })
+}
+
+export async function getWhatsappOrdersWithUndoneDispatch() {
+  const todayKey = getTodayKey()
+  const snap = await db
+    .collection('restaurants')
+    .doc(config.restaurantId)
+    .collection('days')
+    .doc(todayKey)
+    .collection('orders')
+    .where('orderSource', '==', 'whatsapp')
+    .limit(50)
+    .get()
+
+  return snap.docs
+    .map((doc) => ({ id: doc.id, dayKey: todayKey, ...doc.data() }))
+    .filter((order) => order.status !== 'delivered')
+    .filter((order) => order.whatsappDispatchSentAt)
+}
+
+export async function clearWhatsappDispatchSent(order) {
+  await db
+    .collection('restaurants')
+    .doc(config.restaurantId)
+    .collection('days')
+    .doc(order.dayKey || getTodayKey())
+    .collection('orders')
+    .doc(order.id)
+    .update({
+      whatsappDispatchSentAt: FieldValue.delete(),
+      whatsappDispatchMessageKey: FieldValue.delete(),
       updatedAt: FieldValue.serverTimestamp(),
     })
 }

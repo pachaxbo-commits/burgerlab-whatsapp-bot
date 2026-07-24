@@ -40,7 +40,7 @@ export class WhatsappClient {
     await this.sock.sendPresenceUpdate('composing', chatId)
     await sleep(getTypingDelay(text))
     await this.sock.sendPresenceUpdate('paused', chatId)
-    await this.sock.sendMessage(chatId, { text })
+    return await this.sock.sendMessage(chatId, { text })
   }
 
   async startTyping(chatId) {
@@ -51,9 +51,9 @@ export class WhatsappClient {
   async sendImage(chatId, imagePath, caption) {
     if (!this.sock) throw new Error('WhatsApp no esta iniciado.')
     await this.sock.sendPresenceUpdate('composing', chatId)
-    await sleep(900)
+    await sleep(3000)
     await this.sock.sendPresenceUpdate('paused', chatId)
-    await this.sock.sendMessage(chatId, {
+    return await this.sock.sendMessage(chatId, {
       image: { url: imagePath },
       caption,
     })
@@ -62,9 +62,9 @@ export class WhatsappClient {
   async sendLocation(chatId, { latitude, longitude, name, address }) {
     if (!this.sock) throw new Error('WhatsApp no esta iniciado.')
     await this.sock.sendPresenceUpdate('composing', chatId)
-    await sleep(700)
+    await sleep(3000)
     await this.sock.sendPresenceUpdate('paused', chatId)
-    await this.sock.sendMessage(chatId, {
+    return await this.sock.sendMessage(chatId, {
       location: {
         degreesLatitude: latitude,
         degreesLongitude: longitude,
@@ -72,6 +72,11 @@ export class WhatsappClient {
         address,
       },
     })
+  }
+
+  async deleteMessage(chatId, key) {
+    if (!this.sock) throw new Error('WhatsApp no esta iniciado.')
+    await this.sock.sendMessage(chatId, { delete: key })
   }
 
   async findGroupIdBySubject(subject) {
@@ -173,8 +178,8 @@ function normalizeText(text) {
 }
 
 function getTypingDelay(text) {
-  const base = 500
-  const perChar = Math.min(text.length * 12, 1800)
+  const base = 3000
+  const perChar = Math.min(text.length * 10, 2000)
   return base + perChar
 }
 

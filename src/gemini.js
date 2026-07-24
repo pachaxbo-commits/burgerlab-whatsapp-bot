@@ -128,8 +128,17 @@ function isTemporaryGeminiError(error) {
 function buildPrompt({ message, conversation, catalog }) {
   const catalogLines = catalog.products
     .map((product) => {
-      const extras = Array.isArray(product.extras) && product.extras.length
-        ? ` Extras: ${product.extras.map((extra) => `${extra.name} +${extra.price}`).join(', ')}.`
+      // Combina los extras del producto y los quickExtras globales (solo para hamburguesas)
+      const allExtras = [...(product.extras || [])]
+      if (product.categoryId === 'hamburguesas' && Array.isArray(catalog.quickExtras)) {
+        catalog.quickExtras.forEach((qe) => {
+          if (!allExtras.some((e) => e.id === qe.id)) {
+            allExtras.push(qe)
+          }
+        })
+      }
+      const extras = allExtras.length
+        ? ` Extras/Adicionales disponibles: ${allExtras.map((extra) => `${extra.name} +${extra.price}`).join(', ')}.`
         : ''
       return `- id=${product.id}; ${product.name}; precio=${product.price}; categoria=${product.categoryId}.${extras}`
     })
@@ -143,16 +152,18 @@ Objetivo:
 - Responder natural, corto y claro.
 - Ayudar al cliente a registrar un pedido.
 - No inventar productos ni precios; usa solo el catalogo.
-- Si el cliente saluda o pregunta, responde normal y ofrece tomar pedido.
-- Si el cliente pregunta cuanto cuesta el delivery/envio/tarifa, devuelve intent="delivery_pricing".
+- Si el cliente saluda o hace una pregunta normal del negocio, responde de forma amigable y ofrece tomar el pedido.
+- Si el cliente pregunta cuánto cuesta el delivery/envio/tarifa, devuelve intent="delivery_pricing".
 - Si el cliente quiere pagar por QR o pide QR/comprobante, devuelve intent="payment_qr_request".
-- Si pregunta algo que no puedes responder con seguridad o requiere decision humana, devuelve intent="human_help" y no inventes.
+- Si el cliente hace preguntas muy raras, incoherentes, groseras, no relacionadas con comida/restaurante o que requieren decision humana, devuelve intent="human_help".
 - Cuando quiera pedir, pide esta lista:
 Nombre
 Pedido
 Metodo de pago: QR o efectivo
 Recojo o envio. Si es envio, pedir ubicacion/direccion.
 - No crees el pedido hasta tener esos datos y los items del catalogo.
+- Si el cliente pide extras/adicionales (ej. "con extra de queso", "salsa golf adicional"), agrégalos a la lista "extras" de ese item con el id, name y price exactos que figuran en el catálogo.
+- Si pide varias unidades de un mismo extra (ej. "2 de salsa golf", "con doble de salsa bbq"), agrega ese extra múltiples veces en la lista "extras" del item correspondiente (tantas veces como se haya pedido, ej: 2 elementos iguales si pidió doble).
 - Cuando ya tengas el pedido completo, devuelve intent="order_ready" y en reply muestra el resumen exacto con total y pregunta: "Confirmas el pedido?"
 - Si el cliente confirma un resumen pendiente con palabras como si, confirmo, correcto, dale o ok, devuelve intent="confirm_order".
 - Si el cliente cancela o quiere cambiar, devuelve intent="cancel_order" u "order_draft" segun corresponda.
