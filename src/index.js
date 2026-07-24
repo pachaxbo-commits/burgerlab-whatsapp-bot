@@ -1173,7 +1173,7 @@ function startConfirmationNoticePolling() {
   }
 
   const check = async () => {
-    if (isChecking || !botEnabled || !whatsapp.connected || Date.now() < firestoreBackoffUntil) return
+    if (isChecking || !botEnabled || !whatsapp.connected || Date.now() < firestoreBackoffUntil || !isWithinBusinessHours()) return
     isChecking = true
 
     try {
@@ -1219,7 +1219,7 @@ function startConfirmationNoticePolling() {
   }
 
   const checkUndo = async () => {
-    if (isCheckingUndo || !botEnabled || !whatsapp.connected || Date.now() < firestoreBackoffUntil) return
+    if (isCheckingUndo || !botEnabled || !whatsapp.connected || Date.now() < firestoreBackoffUntil || !isWithinBusinessHours()) return
     isCheckingUndo = true
 
     try {
