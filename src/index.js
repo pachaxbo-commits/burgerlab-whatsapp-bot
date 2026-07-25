@@ -991,11 +991,13 @@ function inferExtrasFromText(normalizedText, product, catalog) {
     const extraName = normalizeText(extra.name)
     if (!extraName) continue
     const coreKey = extraName.replace(/\b(extra|adicional|mas)\b/gi, '').trim()
-    const isMatched = normalizedText.includes(extraName) ||
-      (coreKey.length >= 3 && normalizedText.includes(coreKey)) ||
-      (extra.id && normalizedText.includes(extra.id))
 
+    const nameRegex = new RegExp(`\\b${extraName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i')
+    const coreRegex = coreKey.length >= 3 ? new RegExp(`\\b${coreKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i') : null
+
+    const isMatched = nameRegex.test(normalizedText) || (coreRegex && coreRegex.test(normalizedText))
     if (!isMatched) continue
+
     const quantity = inferExtraQuantity(normalizedText, coreKey || extraName)
     for (let i = 0; i < quantity; i += 1) extras.push(extra)
   }
