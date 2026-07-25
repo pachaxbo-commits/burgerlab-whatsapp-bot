@@ -115,23 +115,30 @@ const whatsapp = new WhatsappClient({
           return
         }
 
-        if (isQuestionOrEditRequest(text) || hasUsefulInferredFields(text)) {
+        const inferred = inferFieldsFromText(text)
+        const isProof = isPaymentProofMessage(text)
+        const isEditItemsRequest = isQuestionOrEditRequest(text) && !isProof && !inferred.deliveryAddress
+
+        if (isEditItemsRequest) {
           state.awaitingPaymentProof = null
           conversations.scheduleSave()
         } else {
-          const inferred = inferFieldsFromText(text)
           if (inferred.deliveryAddress) {
             state.awaitingPaymentProof.orderInput.deliveryAddress = inferred.deliveryAddress
             conversations.scheduleSave()
           }
-          if (isPaymentProofMessage(text)) {
+          if (inferred.customerName && !state.awaitingPaymentProof.orderInput.customerName) {
+            state.awaitingPaymentProof.orderInput.customerName = inferred.customerName
+            conversations.scheduleSave()
+          }
+          if (isProof) {
             state.awaitingPaymentProof.proofReceived = true
             conversations.scheduleSave()
           }
 
           if (state.awaitingPaymentProof.orderInput.fulfillmentType === 'delivery' && !state.awaitingPaymentProof.orderInput.deliveryAddress) {
             const reply = state.awaitingPaymentProof.proofReceived
-              ? 'Perfecto, ya recibi el comprobante. Solo me falta tu ubicacion de WhatsApp o direccion exacta para pasar el pedido a caja.'
+              ? 'Perfecto, ya recibi tu comprobante. Solo me falta tu ubicacion de WhatsApp o direccion exacta para pasar el pedido a caja.'
               : 'Ya tengo tu pedido listo para QR. Por favor enviame el comprobante y tu ubicacion de WhatsApp o direccion exacta para el envio.'
             conversations.add(chatId, 'bot', reply)
             await whatsapp.sendText(chatId, reply)
@@ -146,6 +153,8 @@ const whatsapp = new WhatsappClient({
             }
             const created = await createWhatsappOrderWithRetry(orderInput)
             conversations.setLastOrder(chatId, created.orderId)
+            state.awaitingPaymentProof = null
+            conversations.scheduleSave()
 
             const reply = [
               'Perfecto, recibi tu comprobante.',
@@ -162,6 +171,58 @@ const whatsapp = new WhatsappClient({
           await whatsapp.sendText(chatId, reply)
           return
         }
+      }
+
+      if (isPaymentProofMessage(text)) {
+        if (state.pendingOrder) {
+          const orderInput = {
+            ...state.pendingOrder.orderInput,
+            expectedPaymentMethod: 'qr',
+            paymentMethod: 'qr',
+            qrProofReceived: true,
+            paymentReviewNote: 'Cliente envio comprobante QR por WhatsApp. Caja debe revisarlo antes de confirmar pago.',
+          }
+          const created = await createWhatsappOrderWithRetry(orderInput)
+          conversations.setLastOrder(chatId, created.orderId)
+          state.pendingOrder = null
+          state.orderDraft = null
+          conversations.scheduleSave()
+
+          const reply = [
+            'Perfecto, recibi tu comprobante.',
+            'Voy a pasar tu pedido a caja para que revisen el pago y confirmen el tiempo de salida.',
+          ].join('\n')
+
+          conversations.add(chatId, 'bot', reply)
+          await whatsapp.sendText(chatId, reply)
+          return
+        }
+
+        if (state.orderDraft?.items?.length) {
+          const mergedResult = mergeOrderDraft(state.orderDraft, buildEmptyAiResult(), text)
+          const orderInput = buildOrderInput({ result: { ...mergedResult, paymentMethod: 'qr' }, chatId })
+          orderInput.qrProofReceived = true
+          orderInput.paymentReviewNote = 'Cliente envio comprobante QR por WhatsApp. Caja debe revisarlo antes de confirmar pago.'
+
+          const created = await createWhatsappOrderWithRetry(orderInput)
+          conversations.setLastOrder(chatId, created.orderId)
+          state.orderDraft = null
+          conversations.scheduleSave()
+
+          const reply = [
+            'Perfecto, recibi tu comprobante.',
+            'Voy a pasar tu pedido a caja para que revisen el pago y confirmen el tiempo de salida.',
+          ].join('\n')
+
+          conversations.add(chatId, 'bot', reply)
+          await whatsapp.sendText(chatId, reply)
+          return
+        }
+
+        const reply = 'Recibí tu comprobante por este chat. Para registrar tu pedido, por favor envíame primero los detalles de tu pedido en texto.'
+        conversations.add(chatId, 'bot', reply)
+        await whatsapp.sendText(chatId, reply)
+        return
       }
 
       if (state.pendingOrder && isConfirmText(text)) {
