@@ -45,12 +45,40 @@ export async function understandMessage({ message, conversation, catalog }) {
   const prompt = buildPrompt({ message, conversation, catalog })
   let text = '{}'
   if (config.openaiApiKey) {
-    text = await generateOpenAiWithRetry(prompt)
+    try {
+      text = await generateOpenAiWithRetry(prompt)
+    } catch (openaiError) {
+      console.error('Error llamando a OpenAI API:', openaiError)
+      if (config.geminiApiKey) {
+        text = (await generateContentWithRetry(prompt)).text || '{}'
+      } else {
+        return buildEmptyAiResult()
+      }
+    }
   } else if (config.geminiApiKey) {
-    text = (await generateContentWithRetry(prompt)).text || '{}'
+    try {
+      text = (await generateContentWithRetry(prompt)).text || '{}'
+    } catch (geminiError) {
+      console.error('Error llamando a Gemini API:', geminiError)
+      return buildEmptyAiResult()
+    }
   }
-  const parsed = JSON.parse(text)
-  return orderSchema.parse(parsed)
+
+  try {
+    const rawObject = JSON.parse(text || '{}')
+    if (Array.isArray(rawObject.items)) {
+      rawObject.items = rawObject.items.map((item) => ({
+        ...item,
+        extras: Array.isArray(item.extras) ? item.extras : [],
+        options: Array.isArray(item.options) ? item.options : [],
+        quantity: Math.min(Math.max(Number(item.quantity || 1), 1), 20),
+      }))
+    }
+    return orderSchema.parse(rawObject)
+  } catch (parseError) {
+    console.error('Error parseando o validando JSON de la IA:', parseError)
+    return buildEmptyAiResult()
+  }
 }
 
 async function generateOpenAiWithRetry(prompt) {

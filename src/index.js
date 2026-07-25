@@ -27,7 +27,7 @@ const deliveryTariffImagePath = path.resolve(__dirname, '..', 'assets', 'deliver
 const paymentQrImagePath = path.resolve(__dirname, '..', 'assets', 'qr-pago-burger-lab.png')
 const botVersion = process.env.RAILWAY_GIT_COMMIT_SHA?.slice(0, 7) || 'local'
 
-const SESSION_GAP_MS = 6 * 60 * 60 * 1000
+const SESSION_GAP_MS = 45 * 60 * 1000
 
 let botEnabled = config.botEnabled
 let acceptingOrders = getSettings().acceptingOrders
@@ -88,7 +88,7 @@ const whatsapp = new WhatsappClient({
       return
     }
 
-    if (conversations.isNewSession(chatId, SESSION_GAP_MS)) {
+    if (conversations.isNewSession(chatId, SESSION_GAP_MS) || isExplicitResetRequest(text)) {
       conversations.resetSession(chatId)
     }
 
@@ -745,6 +745,11 @@ function mergeOrderDraft(previous, result, text) {
   return merged
 }
 
+function isExplicitResetRequest(text) {
+  const norm = normalizeText(text)
+  return /\b(nuevo pedido|reiniciar|empezar de nuevo|borrar pedido|cancelar pedido|menu de cero)\b/.test(norm)
+}
+
 function inferFieldsFromText(text) {
   const normalized = normalizeText(text)
   const paymentMethod = /\bqr\b/.test(normalized)
@@ -759,10 +764,18 @@ function inferFieldsFromText(text) {
     : /\b(recojo|recoger|retiro|retirar|local)\b/.test(normalized)
       ? 'pickup'
       : null
-  const rawText = String(text || '')
-  const deliveryAddress = /https:\/\/maps\.google\.com\/\?q=-?\d+(?:\.\d+)?,-?\d+(?:\.\d+)?/i.test(rawText)
-    ? rawText.match(/https:\/\/maps\.google\.com\/\?q=-?\d+(?:\.\d+)?,-?\d+(?:\.\d+)?/i)?.[0] || rawText
-    : ''
+  const rawText = String(text || '').trim()
+
+  let deliveryAddress = ''
+  const mapsMatch = rawText.match(/https:\/\/maps\.google\.com\/\?q=-?\d+(?:\.\d+)?,-?\d+(?:\.\d+)?/i)
+  if (mapsMatch) {
+    deliveryAddress = mapsMatch[0]
+  } else if (fulfillmentType === 'delivery' || /\b(ubicacion|direccion|calle|av|avenida|barrio|zona|pasaje|esquina)\b/i.test(rawText)) {
+    if (rawText.length >= 5 && !isConfirmText(text) && !isCancelText(text) && !paymentMethod) {
+      deliveryAddress = rawText
+    }
+  }
+
   const introducedName = rawText.match(/\b(?:soy|nombre|me llamo)\s+([\p{L}]{3,}(?:\s+[\p{L}]{3,})?)/iu)?.[1]?.trim()
   const possibleName = rawText
     .split(/[\n,]/)
@@ -772,8 +785,8 @@ function inferFieldsFromText(text) {
   return {
     paymentMethod,
     fulfillmentType,
-    customerName: introducedName || possibleName || '',
     deliveryAddress,
+    customerName: introducedName || possibleName || '',
   }
 }
 
