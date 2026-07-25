@@ -556,6 +556,8 @@ app.post('/orders/accepting/off', requireToken, async (req, res) => {
   res.json({ ok: true, acceptingOrders, settings })
 })
 
+const confirmationSentViaEndpoint = new Set()
+
 app.post('/orders/:orderId/confirmed', requireToken, async (req, res) => {
   const order = await findOrder(req.params.orderId)
   if (!order) {
@@ -570,11 +572,16 @@ app.post('/orders/:orderId/confirmed', requireToken, async (req, res) => {
     return
   }
 
+  // Mark in-memory FIRST to prevent polling from also sending
+  confirmationSentViaEndpoint.add(order.id)
+
+  // Mark in Firestore BEFORE sending the message to prevent race condition with polling
+  await markWhatsappConfirmationSent(order)
+
   await whatsapp.sendText(
     chatId,
     buildConfirmationMessage(delayMinutes),
   )
-  await markWhatsappConfirmationSent(order)
   await notifyDeliveryGroupOrderConfirmed(order, delayMinutes)
 
   res.json({ ok: true })
@@ -1240,6 +1247,11 @@ function startConfirmationNoticePolling() {
     try {
       const orders = await getWhatsappOrdersPendingConfirmationNotice()
       for (const order of orders) {
+        // Skip if already confirmed via the HTTP endpoint
+        if (confirmationSentViaEndpoint.has(order.id)) {
+          confirmationSentViaEndpoint.delete(order.id)
+          continue
+        }
         const delayMinutes = Number(order.estimatedDelay || config.defaultDelayMinutes)
         const chatId = order.whatsappChatId || phoneToChatId(order.customerPhone)
         if (!chatId) continue
