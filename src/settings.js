@@ -5,6 +5,8 @@ import { config } from './config.js'
 const settingsPath = config.settingsPath
 
 export const defaultSettings = {
+  openHour: 17,
+  closeHour: 23,
   acceptingOrders: true,
   acceptingOrdersPausedUntil: '',
   acceptingOrdersPauseReason: '',

@@ -1297,6 +1297,10 @@ function buildDeliverySummaryLines(orderInput) {
 }
 
 function isWithinBusinessHours(now = new Date()) {
+  const settings = getSettings()
+  const openHour = typeof settings.openHour === 'number' ? settings.openHour : config.openHour
+  const closeHour = typeof settings.closeHour === 'number' ? settings.closeHour : config.closeHour
+
   const hour = Number(
     new Intl.DateTimeFormat('en-US', {
       hour: 'numeric',
@@ -1305,5 +1309,5 @@ function isWithinBusinessHours(now = new Date()) {
     }).format(now),
   )
 
-  return hour >= config.openHour && hour < config.closeHour
+  return hour >= openHour && hour < closeHour
 }
