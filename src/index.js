@@ -806,9 +806,9 @@ function inferFieldsFromText(text) {
     }
   }
 
-  const introducedName = rawText.match(/\b(?:mi\s+nombre\s+es|nombre\s+(?:es\s+)?|me\s+llamo\s+|soy\s+)\s*([\p{L}]{3,}(?:\s+[\p{L}]{3,})?)/iu)?.[1]?.trim()
+  const introducedName = rawText.match(/\b(?:mi\s+nombre\s+es|nombre\s*(?:es\s+|:\s*)?|me\s+llamo\s+|soy\s+)[:\s]*([\p{L}]{3,}(?:\s+[\p{L}]{3,})?)/iu)?.[1]?.trim()
   const possibleName = rawText
-    .split(/[\n,]/)
+    .split(/[\n,:.]/)
     .map((part) => part.replace(/\b(mi\s+nombre\s+es|nombre|me\s+llamo|soy)\b/gi, '').trim())
     .find((part) => isLikelyCustomerName(part))
 
