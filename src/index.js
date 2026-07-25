@@ -601,9 +601,7 @@ function shutdown(signal) {
 async function requestQrPaymentProof(chatId, orderInput, summary) {
   conversations.setAwaitingPaymentProof(chatId, orderInput, summary)
   const deliveryLine = orderInput.fulfillmentType === 'delivery'
-    ? orderInput.deliveryAddress
-      ? 'El envio se paga directamente al delivery.'
-      : 'Como es envio, tambien necesito tu ubicacion de WhatsApp o direccion exacta.'
+    ? 'El envio se paga directamente al delivery.'
     : 'Caja revisara el comprobante antes de confirmar el pedido.'
   const caption = [
     summary,
@@ -783,10 +781,10 @@ function inferFieldsFromText(text) {
     }
   }
 
-  const introducedName = rawText.match(/\b(?:soy|nombre|me llamo)\s+([\p{L}]{3,}(?:\s+[\p{L}]{3,})?)/iu)?.[1]?.trim()
+  const introducedName = rawText.match(/\b(?:mi\s+nombre\s+es|nombre\s+(?:es\s+)?|me\s+llamo\s+|soy\s+)\s*([\p{L}]{3,}(?:\s+[\p{L}]{3,})?)/iu)?.[1]?.trim()
   const possibleName = rawText
     .split(/[\n,]/)
-    .map((part) => part.trim())
+    .map((part) => part.replace(/\b(mi\s+nombre\s+es|nombre|me\s+llamo|soy)\b/gi, '').trim())
     .find((part) => isLikelyCustomerName(part))
 
   return {
@@ -956,8 +954,14 @@ function inferExtrasFromText(normalizedText, product, catalog) {
   const extras = []
   for (const extra of availableExtras) {
     const extraName = normalizeText(extra.name)
-    if (!extraName || !normalizedText.includes(extraName)) continue
-    const quantity = inferExtraQuantity(normalizedText, extraName)
+    if (!extraName) continue
+    const coreKey = extraName.replace(/\b(extra|adicional|mas)\b/gi, '').trim()
+    const isMatched = normalizedText.includes(extraName) ||
+      (coreKey.length >= 3 && normalizedText.includes(coreKey)) ||
+      (extra.id && normalizedText.includes(extra.id))
+
+    if (!isMatched) continue
+    const quantity = inferExtraQuantity(normalizedText, coreKey || extraName)
     for (let i = 0; i < quantity; i += 1) extras.push(extra)
   }
 
