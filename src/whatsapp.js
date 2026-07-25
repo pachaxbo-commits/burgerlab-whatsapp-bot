@@ -163,12 +163,25 @@ export class WhatsappClient {
 }
 
 function extractText(message) {
-  if (message.message?.imageMessage) {
-    const caption = message.message.imageMessage.caption || ''
+  let msg = message.message
+  if (!msg) return ''
+
+  if (msg.ephemeralMessage) msg = msg.ephemeralMessage.message || msg
+  if (msg.viewOnceMessage) msg = msg.viewOnceMessage.message || msg
+  if (msg.viewOnceMessageV2) msg = msg.viewOnceMessageV2.message || msg
+
+  if (msg.imageMessage) {
+    const caption = msg.imageMessage.caption || ''
     return caption.trim() || '[imagen_recibida]'
   }
 
-  const location = message.message?.locationMessage
+  const doc = msg.documentMessage || msg.documentWithCaptionMessage?.message?.documentMessage
+  if (doc) {
+    const caption = doc.caption || ''
+    return caption.trim() || '[comprobante_recibido]'
+  }
+
+  const location = msg.locationMessage
   if (location) {
     const latitude = location.degreesLatitude
     const longitude = location.degreesLongitude
@@ -177,9 +190,11 @@ function extractText(message) {
   }
 
   return (
-    message.message?.conversation ||
-    message.message?.extendedTextMessage?.text ||
-    message.message?.imageMessage?.caption ||
+    msg.conversation ||
+    msg.extendedTextMessage?.text ||
+    msg.imageMessage?.caption ||
+    msg.documentMessage?.caption ||
+    msg.documentWithCaptionMessage?.message?.documentMessage?.caption ||
     ''
   ).trim()
 }

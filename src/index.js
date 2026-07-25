@@ -209,8 +209,26 @@ const whatsapp = new WhatsappClient({
       const shouldSendMenuForOrderStart = isFirstCustomerMessage && isOrderStartRequest(text)
       if (isMenuRequest(text) || shouldSendMenuForOrderStart) {
         const caption = getSettings().pickupOnlyMode
-          ? `Claro, te paso nuestro menu. ${getSettings().pickupOnlyMessage} Cuando quieras pedir, mandame tu nombre, pedido y metodo de pago.`
-          : 'Claro, te paso nuestro menu. Cuando quieras pedir, mandame tu nombre, pedido, metodo de pago y si es recojo o envio.'
+          ? `Claro! Te paso nuestro menú 🍔
+
+${getSettings().pickupOnlyMessage}
+
+Para realizar tu pedido, por favor envíanos tus datos en *un solo mensaje* con esta estructura:
+
+*Nombre*: (Tu nombre)
+*Pedido*: (Ej: 1 BBQ LAB extra tocino)
+*Método de pago*: (QR / Efectivo)
+*Entrega*: Recojo`
+          : `Claro! Te paso nuestro menú 🍔
+
+Para realizar tu pedido, por favor envíanos tus datos en *un solo mensaje* con esta estructura:
+
+*Nombre*: (Tu nombre)
+*Pedido*: (Ej: 1 BBQ LAB extra tocino, 1 Mocochinchi 2L)
+*Método de pago*: (QR / Efectivo)
+*Entrega*: (Envío / Recojo)
+
+📌 _Nota: Si tu pedido es para envío, puedes enviarnos tu ubicación de WhatsApp en un mensaje aparte._`
         conversations.add(chatId, 'bot', caption)
         await whatsapp.sendImage(chatId, menuImagePath, caption)
         if (!looksLikeConcreteOrderText(text)) return
@@ -397,7 +415,14 @@ const whatsapp = new WhatsappClient({
       }
 
       if (result.intent === 'confirm_order' && !state.pendingOrder) {
-        const reply = 'Claro. Antes de confirmarlo necesito tener el pedido completo: nombre, pedido, metodo de pago y si es recojo o envio.'
+        const reply = `Claro! Para completar tu pedido, por favor envíame en *un solo mensaje*:
+
+*Nombre*: (Tu nombre)
+*Pedido*: (Ej: 1 BBQ LAB extra tocino)
+*Método de pago*: (QR / Efectivo)
+*Entrega*: (Envío / Recojo)
+
+📌 _Nota: Si tu pedido es para envío, puedes enviarnos tu ubicación de WhatsApp en un mensaje aparte._`
         conversations.add(chatId, 'bot', reply)
         await whatsapp.sendText(chatId, reply)
         return
@@ -813,8 +838,9 @@ function inferFieldsFromText(text) {
     }
   }
 
-  const introducedName = rawText.match(/\b(?:mi\s+nombre\s+es|nombre\s*(?:es\s+|:\s*)?|me\s+llamo\s+|soy\s+)[:\s]*([\p{L}]{3,}(?:\s+[\p{L}]{3,})?)/iu)?.[1]?.trim()
-  const possibleName = rawText
+  const cleanTextForName = rawText.replace(/[*_~]/g, '').trim()
+  const introducedName = cleanTextForName.match(/\b(?:mi\s+nombre\s+es|nombre\s*(?:es\s+|:\s*)?|me\s+llamo\s+|soy\s+)[ \t:]*([\p{L}]{2,}(?:[ \t]+[\p{L}]{2,}){0,2})/iu)?.[1]?.trim()
+  const possibleName = cleanTextForName
     .split(/[\n,:.]/)
     .map((part) => part.replace(/\b(mi\s+nombre\s+es|nombre|me\s+llamo|soy)\b/gi, '').trim())
     .find((part) => isLikelyCustomerName(part))
@@ -1043,7 +1069,23 @@ function shouldProceedWithQrWhileWaitingLocation(result, missingFields) {
 }
 
 function buildMissingFieldsReply(missingFields) {
-  return `Ya tengo el pedido avanzado. Para terminar de registrarlo, me falta: ${missingFields.join(', ')}.`
+  if (missingFields.length === 1 && missingFields[0] === 'tu ubicacion de WhatsApp') {
+    return 'Ya tengo tu pedido casi listo. Por favor envíame tu *ubicación de WhatsApp* (o dirección exacta) para finalizar.'
+  }
+
+  const missingLabels = missingFields.map((f) => {
+    if (f.includes('nombre')) return '*Nombre*'
+    if (f.includes('metodo')) return '*Método de pago* (QR / Efectivo)'
+    if (f.includes('recojo')) return '*Entrega* (Envío / Recojo)'
+    if (f.includes('ubicacion')) return '*Ubicación de WhatsApp*'
+    return `*${f}*`
+  })
+
+  return `Ya tengo parte de tu pedido avanzado. Para completarlo, por favor envíame en *un solo mensaje*:
+
+${missingLabels.map((l) => `• ${l}`).join('\n')}
+
+📌 _Nota: Si tu pedido es con envío, la ubicación de WhatsApp la puedes enviar en un mensaje aparte._`
 }
 
 function buildContextualRecoveryReply(state) {
@@ -1200,7 +1242,12 @@ function isPaymentQrRequest(text) {
 
 function isPaymentProofMessage(text) {
   const normalized = normalizeText(text)
-  return normalized === '[imagen_recibida]' || /\b(comprobante|pagado|pague|ya pague|transferencia|qr listo|te mande)\b/.test(normalized)
+  return (
+    normalized === '[imagen_recibida]' ||
+    normalized === '[comprobante_recibido]' ||
+    normalized === '[documento_recibido]' ||
+    /\b(comprobante|pagado|pague|ya pague|transferencia|qr listo|te mande)\b/.test(normalized)
+  )
 }
 
 function isRestaurantLocationRequest(text) {
