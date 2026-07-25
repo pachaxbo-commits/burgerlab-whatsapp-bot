@@ -995,11 +995,14 @@ function inferExtrasFromText(normalizedText, product, catalog) {
 
 function inferExtraQuantity(normalizedText, normalizedExtraName) {
   const index = normalizedText.indexOf(normalizedExtraName)
-  const before = index > 0 ? normalizedText.slice(Math.max(0, index - 20), index) : ''
-  if (/\b(doble|extra|dos)\s*(de\s+)?$/.test(before)) return 2
-  if (/\b(triple|tres)\s*(de\s+)?$/.test(before)) return 3
-  const numberMatch = before.match(/\b([2-9])\s*(x|de)?\s*$/)
-  if (numberMatch) return Number(numberMatch[1])
+  const before = index > 0 ? normalizedText.slice(Math.max(0, index - 25), index) : ''
+
+  const digitMatch = before.match(/\b([2-9])\s*(x|de|extra|extras|adicional|adicionales)?\s*$/)
+  if (digitMatch) return Number(digitMatch[1])
+
+  if (/\b(doble|dos)\s*(de|extra|extras|adicional)?\s*$/.test(before)) return 2
+  if (/\b(triple|tres)\s*(de|extra|extras|adicional)?\s*$/.test(before)) return 3
+
   return 1
 }
 
