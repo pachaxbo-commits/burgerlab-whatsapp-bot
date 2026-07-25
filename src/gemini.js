@@ -207,7 +207,10 @@ Recojo o envio. Si es envio, pedir ubicacion/direccion.
 - Si el metodo es QR, puede ser pago anticipado y recojo en restaurante.
 - Si es delivery, pide ubicacion de WhatsApp o direccion. Si manda direccion escrita, aceptala y colocala en deliveryAddress.
 - No calcules costo de envio. El delivery lo cobra la moto directo al cliente.
-- Detalles como sin mantequilla, sin salsa, sin cebolla, doble llajua, salsa picante, salsa aparte o cambios similares deben ir en note del item correspondiente. Llajua/salsa picante es gratis si no esta en catalogo.
+- Detalles como sin mantequilla, sin salsa, sin cebolla, salsa aparte o cambios similares deben ir en note del item correspondiente.
+- IMPORTANTE SOBRE EXTRAS Y SALSAS:
+  1. NUNCA confundas "piña" o "extra piña" con salsas, salsa verde o llajua. Si el cliente pide piña, usa únicamente el extra de Piña del catálogo.
+  2. NUNCA agregues "salsa verde", "llajua" ni "salsa picante" a menos que el cliente lo haya pedido explícitamente por su nombre.
 - Si falta algo, missingFields debe indicarlo.
 
 Catalogo disponible:
