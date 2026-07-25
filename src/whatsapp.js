@@ -109,15 +109,21 @@ export class WhatsappClient {
   }
 
   async handleMessages(event) {
-    console.log(`messages.upsert recibido: type=${event.type}, mensajes=${event.messages?.length || 0}`)
     if (event.type !== 'notify') return
 
     for (const message of event.messages) {
       if (message.key.fromMe) continue
-      const chatId = message.key.remoteJid
-      const text = extractText(message)
-      if (!chatId || !text) continue
+      let chatId = message.key.remoteJid
+      if (!chatId) continue
       if (chatId.endsWith('@g.us')) continue
+
+      if (chatId.endsWith('@lid') && message.key.participant) {
+        chatId = message.key.participant
+      }
+      chatId = chatId.replace('@c.us', '@s.whatsapp.net')
+
+      const text = extractText(message)
+      if (!text) continue
 
       console.log(`Mensaje de ${chatId}: "${text.slice(0, 80)}" -> procesando...`)
       try {

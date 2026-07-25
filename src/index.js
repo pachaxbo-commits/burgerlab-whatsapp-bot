@@ -80,16 +80,23 @@ const whatsapp = new WhatsappClient({
       return
     }
 
+    if (conversations.isNewSession(chatId, SESSION_GAP_MS) || isExplicitResetRequest(text)) {
+      conversations.resetSession(chatId)
+    }
+
     if (!isWithinBusinessHours()) {
+      if (isExplicitResetRequest(text)) {
+        await whatsapp.sendText(
+          chatId,
+          `Memoria de prueba reiniciada con exito.\n\n${settings.closedMessage}`,
+        )
+        return
+      }
       await whatsapp.sendText(
         chatId,
         settings.closedMessage,
       )
       return
-    }
-
-    if (conversations.isNewSession(chatId, SESSION_GAP_MS) || isExplicitResetRequest(text)) {
-      conversations.resetSession(chatId)
     }
 
     conversations.add(chatId, 'cliente', text)
