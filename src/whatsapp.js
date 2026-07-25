@@ -113,14 +113,13 @@ export class WhatsappClient {
 
     for (const message of event.messages) {
       if (message.key.fromMe) continue
-      let chatId = message.key.remoteJid
+      let chatId = message.key.remoteJidAlt || (message.key.remoteJid?.endsWith('@lid') ? message.key.participant : message.key.remoteJid) || message.key.remoteJid
       if (!chatId) continue
       if (chatId.endsWith('@g.us')) continue
 
-      if (chatId.endsWith('@lid') && message.key.participant) {
-        chatId = message.key.participant
+      if (chatId.endsWith('@c.us')) {
+        chatId = chatId.replace('@c.us', '@s.whatsapp.net')
       }
-      chatId = chatId.replace('@c.us', '@s.whatsapp.net')
 
       const text = extractText(message)
       if (!text) continue
