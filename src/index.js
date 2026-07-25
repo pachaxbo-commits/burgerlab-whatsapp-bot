@@ -153,10 +153,15 @@ const whatsapp = new WhatsappClient({
           return
         }
 
-        const reply = 'Para avanzar con tu pedido por QR, por favor enviame el comprobante de pago por este chat. Caja lo revisara antes de confirmar.'
-        conversations.add(chatId, 'bot', reply)
-        await whatsapp.sendText(chatId, reply)
-        return
+        if (isQuestionOrEditRequest(text) || hasUsefulInferredFields(text)) {
+          state.awaitingPaymentProof = null
+          conversations.scheduleSave()
+        } else {
+          const reply = 'Para avanzar con tu pedido por QR, por favor enviame el comprobante de pago por este chat. Caja lo revisara antes de confirmar.'
+          conversations.add(chatId, 'bot', reply)
+          await whatsapp.sendText(chatId, reply)
+          return
+        }
       }
 
       if (state.pendingOrder && isConfirmText(text)) {
@@ -726,11 +731,31 @@ async function getCatalogForParsing() {
   }
 }
 
+function sanitizeOrderItems(items) {
+  return (items || []).map((item) => {
+    const rawExtras = Array.isArray(item.extras) ? item.extras : Array.isArray(item.modifiers?.extras) ? item.modifiers.extras : []
+    const uniqueExtras = []
+    const seenKeys = new Set()
+    for (const extra of rawExtras) {
+      const key = extra.id || extra.name
+      if (key && !seenKeys.has(key)) {
+        seenKeys.add(key)
+        uniqueExtras.push(extra)
+      }
+    }
+    return {
+      ...item,
+      extras: uniqueExtras,
+    }
+  })
+}
+
 function mergeOrderDraft(previous, result, text) {
   const inferred = inferFieldsFromText(text)
+  const rawItems = result.items.length ? result.items : previous?.items ?? []
   const merged = {
     ...result,
-    items: result.items.length ? result.items : previous?.items ?? [],
+    items: sanitizeOrderItems(rawItems),
     customerName: result.customerName || inferred.customerName || previous?.customerName || '',
     customerPhone: result.customerPhone || previous?.customerPhone || '',
     paymentMethod: result.paymentMethod || inferred.paymentMethod || previous?.paymentMethod || null,
@@ -1261,6 +1286,11 @@ function isCancelText(text) {
 function isThanksText(text) {
   const normalized = normalizeText(text)
   return /^(ok|okay|listo|gracias|muchas gracias|ok gracias|dale gracias|perfecto gracias|ya gracias)$/.test(normalized)
+}
+
+function isQuestionOrEditRequest(text) {
+  const norm = normalizeText(text)
+  return /\?/.test(text) || /\b(por\s*que|porque|cuanto|cuanta|como|no\s+seria|precio|costo|duda|modificar|cambiar|editar|adicional|extra|papas|tocino)\b/.test(norm)
 }
 
 function isSummaryRequest(text) {
