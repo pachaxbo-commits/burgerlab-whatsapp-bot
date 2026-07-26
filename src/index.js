@@ -565,6 +565,19 @@ app.get('/settings', requireToken, (_req, res) => {
   res.json({ ok: true, settings: getSettings() })
 })
 
+app.get('/conversations', requireToken, (_req, res) => {
+  const activeList = Array.from(conversations.byChatId.entries()).map(([chatId, state]) => ({
+    chatId,
+    lastMessageAt: state.lastMessageAt,
+    messages: state.messages || [],
+    hasPendingOrder: Boolean(state.pendingOrder),
+    hasOrderDraft: Boolean(state.orderDraft),
+    hasAwaitingPaymentProof: Boolean(state.awaitingPaymentProof),
+    draftItems: state.orderDraft?.items || state.pendingOrder?.orderInput?.items || [],
+  }))
+  res.json({ ok: true, conversations: activeList })
+})
+
 app.post('/settings', requireToken, async (req, res) => {
   const settings = await updateSettings(req.body || {})
   acceptingOrders = settings.acceptingOrders
@@ -843,12 +856,59 @@ function sanitizeOrderItems(items) {
   })
 }
 
+function applyNotesToItems(items, text) {
+  const notesFromText = inferItemNoteFromText(String(text || '').toLowerCase())
+  if (!notesFromText || !items || !items.length) return items || []
+  return items.map((item) => {
+    const isBurger = item.productId?.includes('bbq') || item.productId?.includes('burger') || item.name?.toLowerCase().includes('burger') || item.name?.toLowerCase().includes('hamburguesa')
+    if (isBurger) {
+      const existing = item.note ? item.note.split(', ').map((n) => n.trim()) : []
+      const newNotes = notesFromText.split(', ').map((n) => n.trim())
+      const combined = Array.from(new Set([...existing, ...newNotes])).filter(Boolean).join(', ')
+      return { ...item, note: combined }
+    }
+    return item
+  })
+}
+
+function mergeOrderItems(prev, next, text) {
+  const isReset = isExplicitResetRequest(text)
+  const prevItems = prev || []
+  const nextItems = next || []
+
+  if (isReset || !prevItems.length) return applyNotesToItems(nextItems, text)
+  if (!nextItems.length) return applyNotesToItems(prevItems, text)
+
+  const isAddition = /\b(agrega|agregame|suma|sumale|tambien|mas|y|mas una|mas 2)\b/i.test(text) || nextItems.some((n) => !prevItems.some((p) => p.productId === n.productId))
+
+  const merged = [...prevItems]
+  for (const newItem of nextItems) {
+    const existingIdx = merged.findIndex((i) => (i.productId && i.productId === newItem.productId) || (i.name && i.name.toLowerCase() === newItem.name?.toLowerCase()))
+    if (existingIdx >= 0) {
+      if (isAddition) {
+        merged[existingIdx] = {
+          ...merged[existingIdx],
+          quantity: merged[existingIdx].quantity + newItem.quantity,
+          note: newItem.note || merged[existingIdx].note,
+          extras: newItem.extras?.length ? newItem.extras : merged[existingIdx].extras,
+        }
+      } else {
+        merged[existingIdx] = { ...merged[existingIdx], ...newItem }
+      }
+    } else {
+      merged.push(newItem)
+    }
+  }
+
+  return applyNotesToItems(merged, text)
+}
+
 function mergeOrderDraft(previous, result, text) {
   const inferred = inferFieldsFromText(text)
-  const rawItems = result.items.length ? result.items : previous?.items ?? []
+  const mergedItems = mergeOrderItems(previous?.items, result.items, text)
   const merged = {
     ...result,
-    items: sanitizeOrderItems(rawItems),
+    items: sanitizeOrderItems(mergedItems),
     customerName: result.customerName || inferred.customerName || previous?.customerName || '',
     customerPhone: result.customerPhone || previous?.customerPhone || '',
     paymentMethod: result.paymentMethod || inferred.paymentMethod || previous?.paymentMethod || null,
@@ -1041,11 +1101,11 @@ function findCatalogProduct(catalog, productId) {
 
 function inferQuantityBeforeProduct(normalizedText, normalizedProductName) {
   const index = normalizedText.indexOf(normalizedProductName)
-  const before = index > 0 ? normalizedText.slice(Math.max(0, index - 18), index) : ''
-  const numberMatch = before.match(/\b([2-9])\s*(x|de)?\s*$/)
-  if (numberMatch) return Number(numberMatch[1])
-  if (/\b(dos)\s*$/.test(before)) return 2
-  if (/\b(tres)\s*$/.test(before)) return 3
+  const before = index > 0 ? normalizedText.slice(Math.max(0, index - 30), index) : ''
+  const digitMatch = before.match(/\b([2-9])\s*(x|de|porcion|porciones|orden|ordenes|paquete|paquetes)?\s*(de)?\s*$/i)
+  if (digitMatch) return Number(digitMatch[1])
+  if (/\b(doble|dos)\s*(x|de|porcion|porciones|orden|ordenes|paquete|paquetes)?\s*(de)?\s*$/i.test(before)) return 2
+  if (/\b(triple|tres)\s*(x|de|porcion|porciones|orden|ordenes|paquete|paquetes)?\s*(de)?\s*$/i.test(before)) return 3
   return 1
 }
 
