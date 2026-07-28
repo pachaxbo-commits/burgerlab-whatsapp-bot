@@ -252,6 +252,18 @@ async function handleIncomingMessage({ chatId, text }) {
         return
       }
 
+      // Igual que arriba pero para cuando el cliente todavia esta a mitad de dar los datos (sin
+      // llegar a ver el resumen todavia) - antes "cancelar" en ese punto no tenia ningun manejo y
+      // el bot solo seguia pidiendo el formato sin entender que el cliente se queria bajar.
+      if (state.orderDraft?.items?.length && isCancelText(text)) {
+        state.orderDraft = null
+        conversations.scheduleSave()
+        const reply = 'Sin problema, cancelado. Si quieres pedir algo, aquí estoy.'
+        conversations.add(chatId, 'bot', reply)
+        await whatsapp.sendText(chatId, reply)
+        return
+      }
+
       if (state.pendingOrder && isSummaryRequest(text)) {
         const reply = `${state.pendingOrder.summary}\n\nAun tengo este pedido listo. Respondeme "Si" para confirmarlo o "No" para cancelarlo.`
         conversations.add(chatId, 'bot', reply)
