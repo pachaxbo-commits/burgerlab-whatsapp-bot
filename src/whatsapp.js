@@ -1,7 +1,7 @@
 import makeWASocket, {
-  Browsers,
   DisconnectReason,
   fetchLatestBaileysVersion,
+  fetchLatestWaWebVersion,
   useMultiFileAuthState,
 } from '@whiskeysockets/baileys'
 import fs from 'node:fs/promises'
@@ -49,26 +49,14 @@ export class WhatsappClient {
 
   async start() {
     const { state, saveCreds } = await useMultiFileAuthState(config.authDir)
-
-    // fetchLatestBaileysVersion pide un archivo a raw.githubusercontent.com; si esa
-    // peticion falla (red de Railway, rate limit, etc.) la libreria NO tira error: devuelve
-    // en silencio una version vieja hardcodeada que WhatsApp ya rechaza con 405 en el
-    // handshake (isLatest queda en false, pero eso nunca se estaba revisando). Por eso el
-    // 405 pasaba siempre en Railway aunque local funcionaba: la red local si llegaba a
-    // GitHub. FALLBACK_VERSION es una version reciente confirmada como valida, para no
-    // depender de que esa peticion externa funcione.
-    const FALLBACK_VERSION = [2, 3000, 1035194821]
-    const { version, isLatest, error } = await fetchLatestBaileysVersion()
-    if (!isLatest) {
-      console.log(`No se pudo confirmar la version mas reciente de WhatsApp Web (usando fallback ${FALLBACK_VERSION.join('.')}). Motivo:`, error?.message || error)
-    }
+    const version = await resolveWaWebVersion()
 
     this.sock = makeWASocket({
-      version: isLatest ? version : FALLBACK_VERSION,
+      version,
       auth: state,
       printQRInTerminal: false,
       logger,
-      browser: Browsers.macOS('Chrome'),
+      browser: ['Burger Lab Bot', 'Chrome', '1.0.0'],
     })
 
     this.sock.ev.on('creds.update', saveCreds)
@@ -242,6 +230,37 @@ export class WhatsappClient {
       setTimeout(() => void this.start(), delay)
     }
   }
+}
+
+// WhatsApp rechaza el handshake con error 405 ("Connection Failure") si la version de
+// protocolo que le mandamos quedo vieja, y eso pasa antes de siquiera generar el QR.
+// Ojo con fetchLatestBaileysVersion(): lee la version del repositorio de Baileys, que
+// suele estar atrasado, y devuelve isLatest:true igual - o sea, miente. Comprobado a mano:
+// la que da esa funcion (2.3000.1035194821) daba 405, y la de fetchLatestWaWebVersion
+// (2.3000.1044015310), que la consulta directo a WhatsApp, conecto y dio QR.
+// Por eso el orden: WhatsApp primero, Baileys como respaldo, y recien al final un numero fijo.
+const FALLBACK_WA_WEB_VERSION = [2, 3000, 1044015310]
+
+async function resolveWaWebVersion() {
+  try {
+    const { version, isLatest } = await fetchLatestWaWebVersion({})
+    if (version && isLatest) return version
+  } catch (error) {
+    console.log('No se pudo consultar la version de WhatsApp Web:', error?.message || error)
+  }
+
+  try {
+    const { version, isLatest } = await fetchLatestBaileysVersion()
+    if (version && isLatest) {
+      console.log(`Usando la version que reporta Baileys (${version.join('.')}). Si aparece error 405, esta desactualizada.`)
+      return version
+    }
+  } catch (error) {
+    console.log('No se pudo consultar la version desde Baileys:', error?.message || error)
+  }
+
+  console.log(`Usando version de respaldo fija ${FALLBACK_WA_WEB_VERSION.join('.')}.`)
+  return FALLBACK_WA_WEB_VERSION
 }
 
 function extractText(message) {
