@@ -425,12 +425,13 @@ async function handleIncomingMessage({ chatId, text }) {
         return
       }
 
-      const result = await understandMessage({
+      const aiResult = await understandMessage({
         message: text,
         conversation: state.messages,
         catalog,
         currentDraft: state.orderDraft || pendingOrderToDraft(state.pendingOrder),
       })
+      const result = { ...aiResult, items: enforceCatalogExtras(aiResult.items, catalog) }
 
       if (result.intent === 'confirm_order' && state.pendingOrder) {
         if (shouldRequestQrPaymentProof(state.pendingOrder.orderInput)) {
@@ -985,6 +986,61 @@ async function getCatalogForParsing() {
     console.error('No se pudo leer catalogo desde Firebase. Usando catalogo de respaldo:', error)
     return fallbackCatalog
   }
+}
+
+function getAllowedExtrasForProduct(product, catalog) {
+  const allowed = [...(product?.extras || [])]
+  if (product?.categoryId === 'hamburguesas' && Array.isArray(catalog?.quickExtras)) {
+    catalog.quickExtras.forEach((quickExtra) => {
+      if (!allowed.some((extra) => extra.id === quickExtra.id)) allowed.push(quickExtra)
+    })
+  }
+  return allowed
+}
+
+// El catalogo manda, no la IA. Un extra que no existe para ese producto no puede llegar al
+// ticket: a un cliente que pidio "doble porcion de queso extra y una porcion de piña" le
+// registro "Sandwich de queso/huevo" x2 y "Salsa verde/picante" - productos de la categoria
+// "Extras", no extras de la hamburguesa. El prompt ya prohibia sustituir extras y aun asi paso,
+// asi que aca se verifica de verdad. Ademas se reescriben nombre y precio con los del catalogo,
+// que es lo que se cobra.
+function enforceCatalogExtras(items, catalog) {
+  const discarded = []
+
+  const cleaned = (items || []).map((item) => {
+    const product =
+      (catalog?.products || []).find((candidate) => candidate.id === item.productId) ||
+      (catalog?.products || []).find((candidate) => normalizeText(candidate.name) === normalizeText(item.name))
+    if (!product) return item
+
+    const allowed = getAllowedExtrasForProduct(product, catalog)
+    const extras = (item.extras || [])
+      .map((extra) => {
+        const extraName = normalizeText(extra.name)
+        const match =
+          allowed.find((candidate) => candidate.id === extra.id) ||
+          allowed.find((candidate) => normalizeText(candidate.name) === extraName) ||
+          // Rescate por nombre parcial: asi "Sandwich de queso/huevo" vuelve a ser "Queso", que
+          // es lo que el cliente realmente pidio, en vez de perderse.
+          allowed.find((candidate) => {
+            const candidateName = normalizeText(candidate.name)
+            return Boolean(extraName) && (extraName.includes(candidateName) || candidateName.includes(extraName))
+          })
+
+        if (match) return { id: match.id, name: match.name, price: Number(match.price) || 0 }
+        discarded.push(`"${extra.name}" en "${product.name}"`)
+        return null
+      })
+      .filter(Boolean)
+
+    return { ...item, extras }
+  })
+
+  if (discarded.length) {
+    console.warn(`Extras descartados por no existir en el catalogo del producto: ${discarded.join(', ')}`)
+  }
+
+  return cleaned
 }
 
 function sanitizeOrderItems(items) {

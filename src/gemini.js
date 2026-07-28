@@ -188,8 +188,14 @@ function buildPrompt({ message, conversation, catalog, currentDraft }) {
           }
         })
       }
+      // El id de cada extra TIENE que ir aca. El esquema obliga a devolver un id por extra, y si
+      // esta lista no lo trae, el unico lugar del catalogo donde el modelo encuentra ids son los
+      // productos - incluida una categoria de productos que se llama literalmente "Extras"
+      // (Sandwich de queso/huevo, Salsa verde/picante). Ahi termina sacandolos: a un cliente que
+      // pidio "doble porcion de queso extra y una porcion de piña" le registro "Sandwich de
+      // queso/huevo" x2 y "Salsa verde/picante".
       const extras = allExtras.length
-        ? ` Extras/Adicionales disponibles: ${allExtras.map((extra) => `${extra.name} +${extra.price}`).join(', ')}.`
+        ? ` Extras/Adicionales disponibles (usa EXACTAMENTE estos id): ${allExtras.map((extra) => `id=${extra.id} (${extra.name}, +${extra.price})`).join('; ')}.`
         : ''
       return `- id=${product.id}; ${product.name}; precio=${product.price}; categoria=${product.categoryId}.${extras}`
     })
@@ -223,6 +229,8 @@ Objetivo:
 - Si es delivery, pide ubicacion de WhatsApp o direccion. Si manda direccion escrita, aceptala y colocala en deliveryAddress.
 - No calcules costo de envio. El delivery lo cobra la moto directo al cliente.
 - REGLA ABSOLUTA DE EXTRAS: Solo asigna un extra si el cliente nombró de forma explícita el nombre exacto de ese extra (aceptando sinónimos claros y variaciones cortas: "papas extra", "una porción de papas extra", "una ración de papas" y "doble porción de papas" TODOS se refieren al mismo extra de papas - no hace falta que diga la palabra "porción" para que cuente). Queda ESTRICTAMENTE PROHIBIDO adivinar, asumir o sustituir extras (ej. nunca cambies piña por salsa verde, ni agregues salsas no pedidas).
+- Un extra SIEMPRE sale de la lista "Extras/Adicionales disponibles" de ESE producto, y su id tiene que ser uno de los "id=" de esa misma lista. NUNCA uses el id ni el nombre de un producto del catálogo como si fuera un extra, aunque el producto esté en la categoría "extras" y su nombre se parezca (ej. si el cliente pide "queso extra", el extra correcto es "Queso" de la lista de adicionales, NO el producto "Sandwich de queso/huevo"; si pide "piña", es el adicional "Piña", NO el producto "Salsa verde/picante").
+- Si el cliente pide un adicional que no está en la lista de ese producto, no lo reemplaces por otro parecido: dejalo fuera y avisale en "reply" que ese adicional no está disponible.
 - IMPORTANTE - la cantidad de un extra NO se multiplica por la cantidad del item salvo que el cliente lo pida explícitamente. Ej. "2 BBQ con extra tocino" son 2 hamburguesas que cada una lleva 1 tocino (agrega el extra "Tocino" UNA sola vez en la lista de extras de ese item - el sistema ya multiplica el precio del extra por la cantidad del item automáticamente). Solo agregues el extra 2 veces si el cliente dijo "doble tocino"/"2 tocino" explícitamente para el extra en sí.
 - Si el cliente pide QUITAR, sacar, eliminar o cancelar un item específico de un pedido que ya se venía armando (ver "Pedido que ya se venia armando" mas abajo si existe), devuelve la lista completa de items SIN ese item (no lo incluyas), manteniendo los demás items intactos. No dejes items vacío a menos que el cliente haya quitado todo.
 - IMPORTANTE - un mensaje puede describir VARIOS items distintos a la vez (ej. "una BBQ con doble tocino y una Burger Lab sin cebolla"): identifica cada hamburguesa/producto por separado como un item independiente en la lista "items", y asegurate de que cada extra, nota o modificador quede asociado SOLO al item al que el cliente se refería, no a todos los items del pedido.
