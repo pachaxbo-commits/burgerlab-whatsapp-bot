@@ -752,12 +752,10 @@ app.post('/orders/:orderId/confirmed', requireToken, async (req, res) => {
   res.json({ ok: true })
 })
 
-// Interruptor de emergencia: la sesion empezo a fallar con error 405 al reconectar y quedo
-// reintentando sin parar. Golpear los servidores de WhatsApp con reconexiones fallidas repetidas
-// es un riesgo real para la cuenta, asi que frenamos los intentos de conexion por completo
-// (el resto del bot - API, salud - sigue funcionando) hasta confirmar el arreglo real.
-// TODO: sacar el "|| true" en cuanto se confirme resuelto el error 405.
-const WHATSAPP_CONNECTION_DISABLED = process.env.WHATSAPP_CONNECTION_DISABLED === '1' || true
+// Interruptor de emergencia (ver commit anterior): se reactiva la conexion ahora que la sesion
+// vieja e incompatible (creada con Baileys 6.7.23) ya se borro a mano con "Cerrar sesion". Si
+// hiciera falta frenar de nuevo, poner WHATSAPP_CONNECTION_DISABLED=1 en las variables de Railway.
+const WHATSAPP_CONNECTION_DISABLED = process.env.WHATSAPP_CONNECTION_DISABLED === '1'
 
 if (!TEST_MODE) {
   if (WHATSAPP_CONNECTION_DISABLED) {
