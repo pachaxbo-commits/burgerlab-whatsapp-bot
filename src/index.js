@@ -381,7 +381,7 @@ const whatsapp = new WhatsappClient({
         message: text,
         conversation: state.messages,
         catalog,
-        currentDraft: state.orderDraft,
+        currentDraft: state.orderDraft || pendingOrderToDraft(state.pendingOrder),
       })
 
       if (result.intent === 'confirm_order' && state.pendingOrder) {
@@ -434,7 +434,7 @@ const whatsapp = new WhatsappClient({
         return
       }
 
-      const mergedResult = mergeOrderDraft(state.orderDraft, result, text, { itemsAreComplete: true })
+      const mergedResult = mergeOrderDraft(state.orderDraft || pendingOrderToDraft(state.pendingOrder), result, text, { itemsAreComplete: true })
       conversations.setOrderDraft(chatId, mergedResult)
       const missingFields = getMissingOrderFields(mergedResult)
       if (mergedResult.items.length > 0 && missingFields.length > 0) {
@@ -972,7 +972,9 @@ function inferFieldsFromText(text) {
     }
   }
 
-  const cleanTextForName = rawText.replace(/[*_~]/g, '').trim()
+  // Sacamos las URLs antes de buscar el nombre - si no, palabras como "https" o "maps"
+  // (de un link de ubicacion de WhatsApp) pasan el chequeo de "parece un nombre".
+  const cleanTextForName = rawText.replace(/[*_~]/g, '').replace(/https?:\/\/\S+/gi, '').trim()
   const introducedName = cleanTextForName.match(/\b(?:mi\s+nombre\s+es|nombre\s*(?:es\s+|:\s*)?|me\s+llamo\s+|soy\s+)[ \t:]*([\p{L}]{2,}(?:[ \t]+[\p{L}]{2,}){0,2})/iu)?.[1]?.trim()
   const possibleName = cleanTextForName
     .split(/[\n,:.]/)
@@ -1297,7 +1299,7 @@ async function tryRecoverOrderFromText(chatId, text, state) {
   try {
     const catalog = await getCatalogForParsing()
     const fallbackResult = mergeOrderDraft(
-      state.orderDraft,
+      state.orderDraft || pendingOrderToDraft(state.pendingOrder),
       inferSimpleOrderFromCatalog(text, catalog),
       text,
     )
@@ -1328,6 +1330,34 @@ async function tryRecoverOrderFromText(chatId, text, state) {
   } catch (fallbackError) {
     console.error('No se pudo recuperar pedido localmente:', fallbackError)
     return { handled: false, reply: '' }
+  }
+}
+
+// Inverso de buildOrderInput: una vez que el pedido pasa a "pendingOrder" (ya se mostro el
+// resumen y se espera "Confirmas?"), el orderDraft se limpia. Sin esto, si el cliente manda una
+// correccion en ese punto ("es doble porcion de tocino"), la IA no tiene ningun contexto del
+// pedido que ya se armó y no puede aplicar el cambio.
+function pendingOrderToDraft(pendingOrder) {
+  if (!pendingOrder?.orderInput) return null
+  const orderInput = pendingOrder.orderInput
+  return {
+    intent: 'order_draft',
+    reply: '',
+    missingFields: [],
+    customerName: orderInput.customerName || '',
+    customerPhone: orderInput.customerPhone || '',
+    paymentMethod: orderInput.expectedPaymentMethod || null,
+    fulfillmentType: orderInput.fulfillmentType || null,
+    deliveryAddress: orderInput.deliveryAddress || '',
+    items: (orderInput.items || []).map((item) => ({
+      productId: item.id,
+      name: item.name,
+      basePrice: item.basePrice,
+      quantity: item.quantity,
+      note: item.modifiers?.note || '',
+      options: item.modifiers?.options || [],
+      extras: item.modifiers?.extras || [],
+    })),
   }
 }
 
