@@ -841,20 +841,14 @@ async function getCatalogForParsing() {
 }
 
 function sanitizeOrderItems(items) {
+  // OJO: los extras repetidos SI son validos (2 entradas iguales = 2 unidades de ese extra,
+  // ej. "doble porcion de tocino"). No deduplicar por id/name aca - eso colapsaba cualquier
+  // pedido de mas de 1 unidad del mismo extra a solo 1.
   return (items || []).map((item) => {
     const rawExtras = Array.isArray(item.extras) ? item.extras : Array.isArray(item.modifiers?.extras) ? item.modifiers.extras : []
-    const uniqueExtras = []
-    const seenKeys = new Set()
-    for (const extra of rawExtras) {
-      const key = extra.id || extra.name
-      if (key && !seenKeys.has(key)) {
-        seenKeys.add(key)
-        uniqueExtras.push(extra)
-      }
-    }
     return {
       ...item,
-      extras: uniqueExtras,
+      extras: rawExtras.filter((extra) => extra && (extra.id || extra.name)),
     }
   })
 }
