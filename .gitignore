@@ -6,3 +6,4 @@ bot-qr.png
 bot-settings.json
 data
 *.log
+.test-data

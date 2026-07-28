@@ -63,8 +63,7 @@ const fallbackCatalog = {
   quickExtras: [],
 }
 
-const whatsapp = new WhatsappClient({
-  onMessage: async ({ chatId, text }) => {
+async function handleIncomingMessage({ chatId, text }) {
     if (!botEnabled) return
 
     await refreshTemporarySettings()
@@ -435,29 +434,41 @@ const whatsapp = new WhatsappClient({
       }
 
       const mergedResult = mergeOrderDraft(state.orderDraft || pendingOrderToDraft(state.pendingOrder), result, text, { itemsAreComplete: true })
-      conversations.setOrderDraft(chatId, mergedResult)
-      const missingFields = getMissingOrderFields(mergedResult)
-      if (mergedResult.items.length > 0 && missingFields.length > 0) {
-        if (shouldProceedWithQrWhileWaitingLocation(mergedResult, missingFields)) {
-          const orderInput = buildOrderInput({ result: mergedResult, chatId })
-          const summary = buildOrderSummary(orderInput)
-          await requestQrPaymentProof(chatId, orderInput, summary)
-          return
-        }
-        const reply = buildMissingFieldsReply(missingFields)
-        conversations.add(chatId, 'bot', reply)
-        await whatsapp.sendText(chatId, reply)
-        return
-      }
 
-      if (mergedResult.items.length > 0 && missingFields.length === 0) {
-        const orderInput = buildOrderInput({ result: mergedResult, chatId })
-        if (orderInput.fulfillmentType === 'delivery' && orderInput.deliveryQuoteStatus === 'missing_location') {
-          const reply = 'Para cotizar el envio automaticamente necesito que me mandes tu ubicacion de WhatsApp. Asi calculo la distancia y te paso el total con envio.'
+      // "Tiene algo que ver con armar un pedido?" - si es asi, guardamos el progreso (aunque sea
+      // parcial, ej. solo el nombre) y seguimos pidiendo lo que falte, SIN reiniciar ni perder lo
+      // ya dado. Si no hay ninguna senal de pedido (saludo suelto, pregunta del negocio, etc.), no
+      // entra aca y sigue el flujo normal de conversacion mas abajo. El chequeo de intent por si
+      // solo no es 100% confiable (la IA a veces clasifica un intento de pedido como "question" u
+      // "other"), asi que tambien nos apoyamos en isOrderStartRequest sobre el texto real.
+      const hasOrderSignal = Boolean(
+        mergedResult.items.length ||
+        mergedResult.customerName ||
+        mergedResult.customerPhone ||
+        mergedResult.fulfillmentType ||
+        mergedResult.deliveryAddress ||
+        result.intent === 'order_draft' ||
+        result.intent === 'order_ready' ||
+        isOrderStartRequest(text),
+      )
+
+      if (hasOrderSignal) {
+        conversations.setOrderDraft(chatId, mergedResult)
+        const missingFields = getMissingOrderFields(mergedResult)
+        if (missingFields.length > 0) {
+          if (shouldProceedWithQrWhileWaitingLocation(mergedResult, missingFields)) {
+            const orderInput = buildOrderInput({ result: mergedResult, chatId })
+            const summary = buildOrderSummary(orderInput)
+            await requestQrPaymentProof(chatId, orderInput, summary)
+            return
+          }
+          const reply = buildMissingFieldsReply(missingFields)
           conversations.add(chatId, 'bot', reply)
           await whatsapp.sendText(chatId, reply)
           return
         }
+
+        const orderInput = buildOrderInput({ result: mergedResult, chatId })
         const summary = buildOrderSummary(orderInput)
         if (orderInput.expectedPaymentMethod === 'qr') {
           await requestQrPaymentProof(chatId, orderInput, summary)
@@ -473,20 +484,6 @@ const whatsapp = new WhatsappClient({
 
       if (result.intent === 'confirm_order' && !state.pendingOrder) {
         const reply = buildOrderTemplateMessage()
-        conversations.add(chatId, 'bot', reply)
-        await whatsapp.sendText(chatId, reply)
-        return
-      }
-
-      // El cliente parece estar intentando pedir (no es un saludo/pregunta suelta) pero el
-      // mensaje no se pudo interpretar en items reales: pedirle que use el formato del ejemplo
-      // en vez de que la IA improvise una respuesta distinta cada vez. El chequeo de intent por
-      // si solo no es 100% confiable (la IA a veces clasifica un intento de pedido como
-      // "question" u "other"), asi que tambien nos apoyamos en isOrderStartRequest sobre el
-      // texto real del cliente como red de seguridad.
-      const seemsLikeOrderAttempt = result.intent === 'order_draft' || result.intent === 'order_ready' || isOrderStartRequest(text)
-      if (seemsLikeOrderAttempt && !mergedResult.items.length) {
-        const reply = ORDER_FORMAT_REDIRECT_MESSAGE
         conversations.add(chatId, 'bot', reply)
         await whatsapp.sendText(chatId, reply)
         return
@@ -509,7 +506,13 @@ const whatsapp = new WhatsappClient({
       conversations.add(chatId, 'bot', reply)
       await whatsapp.sendText(chatId, reply)
     }
-  },
+}
+
+const TEST_MODE = process.env.BOT_TEST_MODE === '1'
+
+const whatsapp = new WhatsappClient({
+  onMessage: handleIncomingMessage,
+  testMode: TEST_MODE,
 })
 
 async function refreshTemporarySettings() {
@@ -689,28 +692,33 @@ app.post('/orders/:orderId/confirmed', requireToken, async (req, res) => {
   res.json({ ok: true })
 })
 
-await whatsapp.start()
-startConfirmationNoticePolling()
+if (!TEST_MODE) {
+  await whatsapp.start()
+  startConfirmationNoticePolling()
 
-const server = app.listen(config.port, () => {
-  console.log(`Bot API escuchando en http://localhost:${config.port}`)
-})
+  const server = app.listen(config.port, () => {
+    console.log(`Bot API escuchando en http://localhost:${config.port}`)
+  })
 
-process.on('SIGTERM', () => shutdown('SIGTERM'))
-process.on('SIGINT', () => shutdown('SIGINT'))
+  const shutdown = (signal) => {
+    console.log(`Cerrando bot por ${signal}...`)
+    server.close(() => {
+      console.log('Servidor HTTP cerrado correctamente.')
+      process.exit(0)
+    })
+
+    setTimeout(() => process.exit(0), 5000).unref()
+  }
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'))
+  process.on('SIGINT', () => shutdown('SIGINT'))
+}
+
 process.on('unhandledRejection', (error) => {
   console.error('Promesa no manejada en el bot:', error)
 })
 
-function shutdown(signal) {
-  console.log(`Cerrando bot por ${signal}...`)
-  server.close(() => {
-    console.log('Servidor HTTP cerrado correctamente.')
-    process.exit(0)
-  })
-
-  setTimeout(() => process.exit(0), 5000).unref()
-}
+export { handleIncomingMessage, whatsapp, TEST_MODE }
 
 async function requestQrPaymentProof(chatId, orderInput, summary) {
   conversations.setAwaitingPaymentProof(chatId, orderInput, summary)
@@ -1205,6 +1213,7 @@ function getMissingOrderFields(result) {
   if (!result.customerPhone) missing.push('tu numero de celular')
   if (!result.fulfillmentType) missing.push('si es recojo o envio')
   if (result.fulfillmentType === 'delivery' && !result.deliveryAddress) missing.push('tu ubicacion de WhatsApp')
+  if (!result.items?.length) missing.push('tu pedido')
   return missing
 }
 

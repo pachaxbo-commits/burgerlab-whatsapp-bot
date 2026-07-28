@@ -16,11 +16,18 @@ const PROCESSED_MESSAGE_TTL_MS = 10 * 60 * 1000
 const PROCESSED_MESSAGE_MAX = 500
 
 export class WhatsappClient {
-  constructor({ onMessage }) {
+  constructor({ onMessage, testMode = false }) {
     this.onMessage = onMessage
     this.sock = null
     this.connected = false
     this.processedMessageIds = new Map()
+    this.testMode = testMode
+  }
+
+  // Simula un mensaje entrante del cliente sin pasar por WhatsApp/Baileys - para el chat de
+  // prueba local (scripts/test-chat.js). Nunca se usa en produccion.
+  async simulateIncomingMessage(chatId, text) {
+    await this.onMessage({ chatId, text })
   }
 
   hasAlreadyProcessed(messageId) {
@@ -56,6 +63,10 @@ export class WhatsappClient {
   }
 
   async sendText(chatId, text) {
+    if (this.testMode) {
+      console.log(`\n🤖 ${text}\n`)
+      return { key: { id: 'test-' + Date.now() } }
+    }
     if (!this.sock) throw new Error('WhatsApp no esta iniciado.')
     await this.sock.sendPresenceUpdate('composing', chatId).catch(() => undefined)
     await sleep(getTypingDelay(text))
@@ -64,11 +75,16 @@ export class WhatsappClient {
   }
 
   async startTyping(chatId) {
+    if (this.testMode) return
     if (!this.sock) return
     await this.sock.sendPresenceUpdate('composing', chatId).catch(() => undefined)
   }
 
   async sendImage(chatId, imagePath, caption) {
+    if (this.testMode) {
+      console.log(`\n🤖 [IMAGEN: ${imagePath}]\n${caption}\n`)
+      return { key: { id: 'test-' + Date.now() } }
+    }
     if (!this.sock) throw new Error('WhatsApp no esta iniciado.')
     await this.sock.sendPresenceUpdate('composing', chatId).catch(() => undefined)
     await sleep(2800)
@@ -87,6 +103,10 @@ export class WhatsappClient {
   }
 
   async sendLocation(chatId, { latitude, longitude, name, address }) {
+    if (this.testMode) {
+      console.log(`\n🤖 [UBICACION] ${name || ''} ${address || ''} (${latitude}, ${longitude})\n`)
+      return { key: { id: 'test-' + Date.now() } }
+    }
     if (!this.sock) throw new Error('WhatsApp no esta iniciado.')
     await this.sock.sendPresenceUpdate('composing', chatId).catch(() => undefined)
     await sleep(2800)
