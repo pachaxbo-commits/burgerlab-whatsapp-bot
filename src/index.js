@@ -266,6 +266,18 @@ async function handleIncomingMessage({ chatId, text }) {
         return
       }
 
+      // El pedido anterior ya se confirmo (fue a cocina) y no hay nada pendiente/en borrador -
+      // si el cliente ahora quiere agregar/cambiar algo, NO lo reescribimos solos (ya se le avisa
+      // a caja/cocina y modificarlo por atras podria desincronizarse con lo que ya estan
+      // preparando). Avisamos directo a los duenos en vez de tocar Firestore de mas.
+      if (!state.pendingOrder && !state.orderDraft?.items?.length && state.lastOrderId && looksLikeOrderModificationRequest(text)) {
+        await notifyOrderModificationRequest(chatId, state.lastOrderId, text)
+        const reply = 'Tu pedido ya se envió a cocina. Le aviso al equipo para que te ayude directamente con ese cambio.'
+        conversations.add(chatId, 'bot', reply)
+        await whatsapp.sendText(chatId, reply)
+        return
+      }
+
       const shouldSendMenuForOrderStart = isFirstCustomerMessage && isOrderStartRequest(text)
       if (isMenuRequest(text) || shouldSendMenuForOrderStart) {
         const caption = buildOrderTemplateMessage()
@@ -447,6 +459,23 @@ async function handleIncomingMessage({ chatId, text }) {
         const caption = buildOrderTemplateMessage()
         conversations.add(chatId, 'bot', caption)
         await whatsapp.sendImage(chatId, menuImagePath, caption)
+        return
+      }
+
+      // Pregunta normal del negocio (horario, ubicacion, metodos de pago, etc.) que no trae
+      // items nuevos: respondela directo, sin tocar el pedido en curso/pendiente. Si no hiciera
+      // esta excepcion, un pedido pendiente "absorbe" la pregunta (como ya tiene items) y en vez
+      // de contestar solo vuelve a mostrar el resumen, ignorando lo que el cliente pregunto.
+      if (result.intent === 'question' && !result.items.length) {
+        // Igual guardamos cualquier dato que la IA haya sacado de paso (ej. el cliente dijo su
+        // nombre en el mismo mensaje que hizo la pregunta) - solo evitamos volver a mostrar el
+        // resumen del pedido en vez de contestar lo que realmente pregunto.
+        if (!state.pendingOrder && (result.customerName || result.customerPhone || result.fulfillmentType || result.deliveryAddress)) {
+          const mergedResult = mergeOrderDraft(state.orderDraft || pendingOrderToDraft(state.pendingOrder), result, text, { itemsAreComplete: true })
+          conversations.setOrderDraft(chatId, mergedResult)
+        }
+        conversations.add(chatId, 'bot', result.reply)
+        await whatsapp.sendText(chatId, result.reply)
         return
       }
 
@@ -810,6 +839,21 @@ async function notifyHumanSupport(chatId, customerMessage) {
   await whatsapp.sendText(targetChatId, message)
 }
 
+async function notifyOrderModificationRequest(chatId, orderId, customerMessage) {
+  const targetChatId = await resolveOwnerAlertChatId()
+  if (!targetChatId) return
+
+  const message = [
+    'Cliente quiere modificar un pedido que YA fue confirmado.',
+    `Pedido: #${orderId}`,
+    `Cliente: ${chatId}`,
+    `Mensaje: ${customerMessage}`,
+    'El bot no lo modifico solo para evitar descoordinacion con cocina - contactar directamente.',
+  ].join('\n')
+
+  await whatsapp.sendText(targetChatId, message)
+}
+
 async function notifyDeliveryGroupOrderConfirmed(order, delayMinutes) {
   if (order.fulfillmentType !== 'delivery') return
 
@@ -937,8 +981,10 @@ function mergeOrderDraft(previous, result, text, { itemsAreComplete = false } = 
   // Cuando el resultado ya viene con el pedido completo (ej. la IA vio el borrador actual y
   // devolvio la lista final actualizada), no lo volvamos a combinar con lo anterior o se
   // duplicarian cantidades. Si vino vacio, igual conservamos lo anterior como respaldo.
+  // Tampoco le aplicamos applyNotesToItems - la IA ya pone la nota (sin cebolla, sin salsa, etc)
+  // en su propia respuesta, y volver a agregarla por regex duplicaba el texto en la nota final.
   const mergedItems = itemsAreComplete
-    ? applyNotesToItems(result.items.length ? result.items : previous?.items || [], text)
+    ? (result.items.length ? result.items : previous?.items || [])
     : mergeOrderItems(previous?.items, result.items, text)
   const merged = {
     ...result,
@@ -1471,6 +1517,11 @@ function looksLikeStructuredOrderMessage(text) {
 function isOrderStartRequest(text) {
   const normalized = normalizeText(text)
   return /\b(quiero|quisiera|pedido|pedir|ordenar|hamburguesa|hamburguesas|burger|bbq|barbacoa|simple|doble|triple|papas|gaseosa|mocochinchi|agua|refresco)\b/.test(normalized)
+}
+
+function looksLikeOrderModificationRequest(text) {
+  const normalized = normalizeText(text)
+  return isOrderStartRequest(text) || /\b(agregar|agregame|aumentar|aumentame|cambiar|cambiame|sacar|sacame|quitar|quitame|modificar|modificame|anadir)\b/.test(normalized)
 }
 
 function looksLikeConcreteOrderText(text) {
