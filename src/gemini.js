@@ -207,14 +207,12 @@ Objetivo:
 - Si el cliente pregunta cuánto cuesta el delivery/envio/tarifa, devuelve intent="delivery_pricing".
 - Si el cliente quiere pagar por QR o pide QR/comprobante, devuelve intent="payment_qr_request".
 - Si el cliente hace preguntas muy raras, incoherentes, groseras, no relacionadas con comida/restaurante o que requieren decision humana, devuelve intent="human_help".
-- Cuando pidas los datos del pedido o falte información, guíale a enviar todo en un solo mensaje usando este formato estructurado con negrillas:
-  *Nombre*:
-  *Pedido*:
-  *Método de pago*: (QR / Efectivo)
-  *Entrega*: (Envío / Recojo)
+- Cuando pidas los datos del pedido o falte información, guíale a enviar todo en un solo mensaje con: Nombre o apellido, Delivery o Recoger (con ubicación GPS si es delivery), Número de Celular, y el Pedido (un renglón por hamburguesa/producto).
+- El método de pago NO es un dato obligatorio: si el cliente no menciona "QR" en ningún momento, asume que paga en efectivo (paymentMethod="cash") y NO se lo preguntes. Solo si el cliente escribe explícitamente que quiere pagar por QR, usa paymentMethod="qr".
+- El número de celular SÍ es un dato obligatorio (customerPhone). Si el cliente no lo dio, indícalo en missingFields.
 - Aclara al cliente que la ubicación de WhatsApp la puede enviar en un mensaje aparte si es envío.
 - Si el cliente NO usa esta plantilla o envía sus datos en varios mensajes informales, PROCESA E INFIERE IGUALMENTE toda la información que el cliente vaya dando paso a paso sin exigir obligatoriamente la plantilla.
-- No crees el pedido hasta tener los datos requeridos (nombre, items del catálogo, método de pago y tipo de entrega).
+- No crees el pedido hasta tener los datos requeridos (nombre, numero de celular, items del catálogo y tipo de entrega).
 - Si el cliente pide extras/adicionales (ej. "con extra de queso", "salsa golf adicional"), agrégalos a la lista "extras" de ese item con el id, name y price exactos que figuran en el catálogo.
 - Si pide varias unidades de un mismo extra (ej. "2 de salsa golf", "con doble de salsa bbq"), agrega ese extra múltiples veces en la lista "extras" del item correspondiente (tantas veces como se haya pedido, ej: 2 elementos iguales si pidió doble).
 - Cuando ya tengas el pedido completo, devuelve intent="order_ready" y en reply muestra el resumen exacto con total y pregunta: "Confirmas el pedido?"
@@ -237,7 +235,8 @@ ${catalogLines}
 ${currentDraft?.items?.length ? `
 Pedido que ya se venia armando en esta conversacion (parte de lo cual el cliente ya confirmo o menciono antes; el "Mensaje nuevo del cliente" de abajo puede estar agregando, quitando o corrigiendo algo de ESTO, no necesariamente reemplazandolo todo):
 Nombre: ${currentDraft.customerName || '(sin definir)'}
-Metodo de pago: ${currentDraft.paymentMethod || '(sin definir)'}
+Celular: ${currentDraft.customerPhone || '(sin definir)'}
+Metodo de pago: ${currentDraft.paymentMethod === 'qr' ? 'QR' : 'Efectivo (por defecto)'}
 Entrega: ${currentDraft.fulfillmentType || '(sin definir)'}
 Items:
 ${currentDraft.items.map((item) => `- ${item.quantity} x ${item.name}${item.extras?.length ? ` + ${item.extras.map((e) => e.name).join(', ')}` : ''}${item.note ? ` (${item.note})` : ''}`).join('\n')}

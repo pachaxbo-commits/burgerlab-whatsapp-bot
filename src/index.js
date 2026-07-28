@@ -269,27 +269,7 @@ const whatsapp = new WhatsappClient({
 
       const shouldSendMenuForOrderStart = isFirstCustomerMessage && isOrderStartRequest(text)
       if (isMenuRequest(text) || shouldSendMenuForOrderStart) {
-        const caption = getSettings().pickupOnlyMode
-          ? `Claro! Te paso nuestro menú 🍔
-
-${getSettings().pickupOnlyMessage}
-
-Para realizar tu pedido, por favor envíanos tus datos en *un solo mensaje* con esta estructura:
-
-*Nombre*: (Tu nombre)
-*Pedido*: (Ej: 1 BBQ LAB extra tocino)
-*Método de pago*: (QR / Efectivo)
-*Entrega*: Recojo`
-          : `Claro! Te paso nuestro menú 🍔
-
-Para realizar tu pedido, por favor envíanos tus datos en *un solo mensaje* con esta estructura:
-
-*Nombre*: (Tu nombre)
-*Pedido*: (Ej: 1 BBQ LAB extra tocino, 1 Mocochinchi 2L)
-*Método de pago*: (QR / Efectivo)
-*Entrega*: (Envío / Recojo)
-
-📌 _Nota: Si tu pedido es para envío, puedes enviarnos tu ubicación de WhatsApp en un mensaje aparte._`
+        const caption = buildOrderTemplateMessage()
         conversations.add(chatId, 'bot', caption)
         await whatsapp.sendImage(chatId, menuImagePath, caption)
         if (!looksLikeConcreteOrderText(text) && !looksLikeStructuredOrderMessage(text)) return
@@ -485,14 +465,17 @@ Para realizar tu pedido, por favor envíanos tus datos en *un solo mensaje* con 
       }
 
       if (result.intent === 'confirm_order' && !state.pendingOrder) {
-        const reply = `Claro! Para completar tu pedido, por favor envíame en *un solo mensaje*:
+        const reply = buildOrderTemplateMessage()
+        conversations.add(chatId, 'bot', reply)
+        await whatsapp.sendText(chatId, reply)
+        return
+      }
 
-*Nombre*: (Tu nombre)
-*Pedido*: (Ej: 1 BBQ LAB extra tocino)
-*Método de pago*: (QR / Efectivo)
-*Entrega*: (Envío / Recojo)
-
-📌 _Nota: Si tu pedido es para envío, puedes enviarnos tu ubicación de WhatsApp en un mensaje aparte._`
+      // El cliente parece estar intentando pedir (no es un saludo/pregunta suelta) pero el
+      // mensaje no se pudo interpretar en items reales: pedirle que use el formato del ejemplo
+      // en vez de que la IA improvise una respuesta distinta cada vez.
+      if ((result.intent === 'order_draft' || result.intent === 'order_ready') && !mergedResult.items.length) {
+        const reply = ORDER_FORMAT_REDIRECT_MESSAGE
         conversations.add(chatId, 'bot', reply)
         await whatsapp.sendText(chatId, reply)
         return
@@ -924,7 +907,7 @@ function mergeOrderDraft(previous, result, text, { itemsAreComplete = false } = 
     ...result,
     items: sanitizeOrderItems(mergedItems),
     customerName: result.customerName || inferred.customerName || previous?.customerName || '',
-    customerPhone: result.customerPhone || previous?.customerPhone || '',
+    customerPhone: result.customerPhone || inferred.customerPhone || previous?.customerPhone || '',
     paymentMethod: result.paymentMethod || inferred.paymentMethod || previous?.paymentMethod || null,
     fulfillmentType: result.fulfillmentType || inferred.fulfillmentType || previous?.fulfillmentType || null,
     deliveryAddress: result.deliveryAddress || inferred.deliveryAddress || previous?.deliveryAddress || '',
@@ -980,11 +963,15 @@ function inferFieldsFromText(text) {
     .map((part) => part.replace(/\b(mi\s+nombre\s+es|nombre|me\s+llamo|soy)\b/gi, '').trim())
     .find((part) => isLikelyCustomerName(part))
 
+  const phoneMatch = rawText.match(/(?:\+?591[\s-]?)?\b([67]\d{7})\b/)
+  const customerPhone = phoneMatch ? phoneMatch[1] : ''
+
   return {
     paymentMethod,
     fulfillmentType,
     deliveryAddress,
     customerName: introducedName || possibleName || '',
+    customerPhone,
   }
 }
 
@@ -996,7 +983,7 @@ function isLikelyCustomerName(value) {
 }
 function hasUsefulInferredFields(text) {
   const inferred = inferFieldsFromText(text)
-  return Boolean(inferred.customerName || inferred.paymentMethod || inferred.fulfillmentType || inferred.deliveryAddress)
+  return Boolean(inferred.customerName || inferred.paymentMethod || inferred.fulfillmentType || inferred.deliveryAddress || inferred.customerPhone)
 }
 
 function buildEmptyAiResult() {
@@ -1202,7 +1189,7 @@ function inferExtraQuantity(normalizedText, normalizedExtraName) {
 function getMissingOrderFields(result) {
   const missing = []
   if (!result.customerName) missing.push('tu nombre')
-  if (!result.paymentMethod) missing.push('tu metodo de pago')
+  if (!result.customerPhone) missing.push('tu numero de celular')
   if (!result.fulfillmentType) missing.push('si es recojo o envio')
   if (result.fulfillmentType === 'delivery' && !result.deliveryAddress) missing.push('tu ubicacion de WhatsApp')
   return missing
@@ -1216,24 +1203,46 @@ function shouldProceedWithQrWhileWaitingLocation(result, missingFields) {
     missingFields[0] === 'tu ubicacion de WhatsApp'
 }
 
+const ORDER_FORMAT_REDIRECT_MESSAGE = 'Claro, por favor llenar los datos según formato (como en el ejemplo)'
+
+function buildOrderTemplateMessage() {
+  const pickupOnly = getSettings().pickupOnlyMode
+  const deliveryLine = pickupOnly
+    ? `- Recojo en el local (${getSettings().pickupOnlyMessage})`
+    : `- Delivery o Recoger (En caso de delivery enviar ubicación GPS)`
+
+  return `¡Hola! 🍔 Para que tu pedido de hamburguesas por WhatsApp sea más fácil y preciso, te pedimos los siguientes datos:
+
+- Nombre o apellido
+${deliveryLine}
+- Número de Celular
+- Pedido (Renglón saltado, como en el ejemplo de abajo)
+- Si deseas pagar con QR, indícalo en tu mensaje (si no se especifica, el pedido se registra en efectivo)
+
+*Ejemplo:*
+Ramirez
+Recoger
+72210742
+1 burger lab sin cebolla
+2 burger lab
+2 bbq lab dobles sin papa
+1 bbq lab doble con piña y tocino
+1 bbq lab doble con tocino
+4 cocas
+
+‼️Nota: Le pedimos realizar su pedido con este formato y revisarlo bien antes de confirmarlo.
+*POR FAVOR*
+*NO EDITAR MENSAJES,*
+*NO MANDAR AUDIOS,*
+*NO LLAMAR*`
+}
+
 function buildMissingFieldsReply(missingFields) {
   if (missingFields.length === 1 && missingFields[0] === 'tu ubicacion de WhatsApp') {
     return 'Ya tengo tu pedido casi listo. Por favor envíame tu *ubicación de WhatsApp* (o dirección exacta) para finalizar.'
   }
 
-  const missingLabels = missingFields.map((f) => {
-    if (f.includes('nombre')) return '*Nombre*'
-    if (f.includes('metodo')) return '*Método de pago* (QR / Efectivo)'
-    if (f.includes('recojo')) return '*Entrega* (Envío / Recojo)'
-    if (f.includes('ubicacion')) return '*Ubicación de WhatsApp*'
-    return `*${f}*`
-  })
-
-  return `Ya tengo parte de tu pedido avanzado. Para completarlo, por favor envíame en *un solo mensaje*:
-
-${missingLabels.map((l) => `• ${l}`).join('\n')}
-
-📌 _Nota: Si tu pedido es con envío, la ubicación de WhatsApp la puedes enviar en un mensaje aparte._`
+  return ORDER_FORMAT_REDIRECT_MESSAGE
 }
 
 function buildContextualRecoveryReply(state) {
@@ -1264,7 +1273,7 @@ function buildContextualRecoveryReply(state) {
     return 'Ya tengo tu pedido avanzado. Si esta correcto, respondeme "Si"; si quieres cambiar algo, dime que modificamos.'
   }
 
-  return 'Disculpa, tuve un problema momentaneo leyendo el mensaje. Me puedes mandar tu pedido con nombre, pedido, metodo de pago y si es recojo o envio?'
+  return ORDER_FORMAT_REDIRECT_MESSAGE
 }
 
 async function tryRecoverOrderFromText(chatId, text, state) {
@@ -1370,7 +1379,7 @@ function isMenuRequest(text) {
 
 function looksLikeStructuredOrderMessage(text) {
   const inferred = inferFieldsFromText(text)
-  const providedCount = [inferred.customerName, inferred.paymentMethod, inferred.fulfillmentType].filter(Boolean).length
+  const providedCount = [inferred.customerName, inferred.customerPhone, inferred.fulfillmentType].filter(Boolean).length
   return providedCount >= 2
 }
 
