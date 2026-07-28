@@ -126,8 +126,8 @@ async function handleIncomingMessage({ chatId, text }) {
             state.awaitingPaymentProof.orderInput.deliveryAddress = inferred.deliveryAddress
             conversations.scheduleSave()
           }
-          if (inferred.customerName && !state.awaitingPaymentProof.orderInput.customerName) {
-            state.awaitingPaymentProof.orderInput.customerName = inferred.customerName
+          if ((inferred.customerName || inferred.weakGuessedName) && !state.awaitingPaymentProof.orderInput.customerName) {
+            state.awaitingPaymentProof.orderInput.customerName = inferred.customerName || inferred.weakGuessedName
             conversations.scheduleSave()
           }
           if (isProof) {
@@ -307,8 +307,15 @@ async function handleIncomingMessage({ chatId, text }) {
 
       const catalog = await getCatalogForParsing()
       const quickResult = inferSimpleOrderFromCatalog(text, catalog)
-      if (quickResult.items.length || (state.orderDraft?.items?.length && hasUsefulInferredFields(text))) {
-        const baseDraft = state.orderDraft || buildEmptyAiResult()
+      // isSimpleEnoughForQuickPath ya filtra el intento de AGREGAR un item por palabra clave
+      // (mas arriba, dentro de inferSimpleOrderFromCatalog), pero el segundo camino de abajo
+      // (orderDraft con items + "algun dato util" en el texto) NO pasaba por ese mismo filtro -
+      // asi que un mensaje de negacion/remocion como "ya no quiero la coca, sacala" podia
+      // colarse igual (el texto "parece util" por una adivinanza debil de nombre) y terminar
+      // en el camino determinista, que no entiende negaciones y dejaba todo intacto.
+      const isSimpleForQuickPath = isSimpleEnoughForQuickPath(normalizeText(text))
+      if (quickResult.items.length || (isSimpleForQuickPath && state.orderDraft?.items?.length && hasUsefulInferredFields(text))) {
+        const baseDraft = state.orderDraft || pendingOrderToDraft(state.pendingOrder) || buildEmptyAiResult()
         const deterministicResult = quickResult.items.length ? quickResult : buildEmptyAiResult()
         const mergedResult = mergeOrderDraft(baseDraft, deterministicResult, text)
         conversations.setOrderDraft(chatId, mergedResult)
@@ -346,7 +353,7 @@ async function handleIncomingMessage({ chatId, text }) {
         return
       }
 
-      if (state.orderDraft?.items?.length && hasUsefulInferredFields(text)) {
+      if (isSimpleForQuickPath && state.orderDraft?.items?.length && hasUsefulInferredFields(text)) {
         const mergedResult = mergeOrderDraft(state.orderDraft, buildEmptyAiResult(), text)
         conversations.setOrderDraft(chatId, mergedResult)
         const missingFields = getMissingOrderFields(mergedResult)
@@ -411,12 +418,22 @@ async function handleIncomingMessage({ chatId, text }) {
         return
       }
 
-      if (result.intent === 'delivery_pricing') {
+      // Igual que con los atajos deterministicos: si el cliente ya viene llenando el formato
+      // (dio nombre, celular o tipo de entrega), una palabra suelta como "envio" o "qr" es su
+      // respuesta a ese campo, no una pregunta suelta sobre tarifas o como pagar - no lo
+      // interrumpamos con informacion generica que le hace perder lo que ya escribio.
+      const isMidTemplateFlow = Boolean(
+        state.orderDraft?.customerName || state.orderDraft?.customerPhone ||
+        state.orderDraft?.fulfillmentType || state.orderDraft?.items?.length ||
+        state.pendingOrder,
+      )
+
+      if (result.intent === 'delivery_pricing' && isDeliveryPricingRequest(text) && !isMidTemplateFlow) {
         await sendDeliveryPricingInfo(chatId)
         return
       }
 
-      if (result.intent === 'payment_qr_request' && !state.pendingOrder && !result.items.length) {
+      if (result.intent === 'payment_qr_request' && !state.pendingOrder && !result.items.length && !isMidTemplateFlow) {
         await sendPaymentQrInfo(chatId)
         return
       }
@@ -739,6 +756,13 @@ async function requestQrPaymentProof(chatId, orderInput, summary) {
 }
 
 async function createWhatsappOrderWithRetry(orderInput) {
+  // BOT_TEST_MODE nunca debe escribir un pedido real en Firestore - el chat de prueba local
+  // ya escribio pedidos reales por error una vez porque esta funcion no tenia este freno.
+  if (TEST_MODE) {
+    const fakeOrderId = 'test-order-' + Date.now()
+    console.log(`\n[MODO PRUEBA] No se registro nada en Firestore. Pedido simulado (${fakeOrderId}):`, JSON.stringify(orderInput, null, 2))
+    return { orderId: fakeOrderId, displayNumber: '#TEST' }
+  }
   try {
     return await createWhatsappOrder(orderInput)
   } catch (error) {
@@ -919,7 +943,7 @@ function mergeOrderDraft(previous, result, text, { itemsAreComplete = false } = 
   const merged = {
     ...result,
     items: sanitizeOrderItems(mergedItems),
-    customerName: result.customerName || inferred.customerName || previous?.customerName || '',
+    customerName: result.customerName || inferred.customerName || previous?.customerName || inferred.weakGuessedName || '',
     customerPhone: result.customerPhone || inferred.customerPhone || previous?.customerPhone || '',
     paymentMethod: result.paymentMethod || inferred.paymentMethod || previous?.paymentMethod || null,
     fulfillmentType: result.fulfillmentType || inferred.fulfillmentType || previous?.fulfillmentType || null,
@@ -990,7 +1014,12 @@ function inferFieldsFromText(text) {
     paymentMethod,
     fulfillmentType,
     deliveryAddress,
-    customerName: introducedName || possibleName || '',
+    // introducedName ("me llamo X"/"soy X") es una senal fuerte y explicita - puede corregir un
+    // nombre previo. possibleName es solo una adivinanza (cualquier palabra de 1-2 palabras que
+    // no esta en la lista negra) - nunca debe pisar un nombre ya confirmado, solo sirve como
+    // ultimo recurso cuando todavia no hay ninguno.
+    customerName: introducedName || '',
+    weakGuessedName: possibleName || '',
     customerPhone,
   }
 }
@@ -999,11 +1028,13 @@ function isLikelyCustomerName(value) {
   if (!/^[\p{L}]{3,}(?:\s+[\p{L}]{3,})?$/u.test(value)) return false
   const normalized = normalizeText(value)
   if (/\b(qr|efectivo|mixto|pago|envio|delivery|domicilio|recojo|retiro|local|ubicacion|whatsapp|burger|hamburguesa|papas|coca|fanta|sprite|agua)\b/.test(normalized)) return false
+  // Saludos y muletillas comunes no son nombres, aunque cumplan el patron de "1-2 palabras con letras".
+  if (/\b(hol+a+|buen(a|o)s?|dias?|tardes?|noches?|gracias|porfa(vor)?|disculp[ae]|permis[oa]|que\s*tal|alo|ola|chau|adios|si|no|ok|okay|listo|dale)\b/.test(normalized)) return false
   return true
 }
 function hasUsefulInferredFields(text) {
   const inferred = inferFieldsFromText(text)
-  return Boolean(inferred.customerName || inferred.paymentMethod || inferred.fulfillmentType || inferred.deliveryAddress || inferred.customerPhone)
+  return Boolean(inferred.customerName || inferred.weakGuessedName || inferred.paymentMethod || inferred.fulfillmentType || inferred.deliveryAddress || inferred.customerPhone)
 }
 
 function buildEmptyAiResult() {
@@ -1025,6 +1056,10 @@ function isSimpleEnoughForQuickPath(normalizedText) {
   const burgerFamilyMentions = (normalizedText.match(/\b(burger lab|burguer lab|burger|hamburguesa|bbq|barbacoa)\b/g) || []).length
   if (burgerFamilyMentions > 1) return false
   if (/\by\s+(otra|otro|una|un|1|2|3)\b/.test(normalizedText)) return false
+  // El parser rapido solo sabe AGREGAR productos por palabra clave - no entiende negaciones.
+  // "ya no quiero la coca, sacala" mencionaria "coca" y la agregaria de nuevo en vez de sacarla.
+  // Estos casos necesitan que la IA entienda la intencion real.
+  if (/\b(ya no quiero|no quiero|sin el|sin la|sacal[oa]|saquenla|saquenlo|quitar|quita el|quita la|elimina|eliminar|borra|borrar|cambia(lo|la)?\s+por|mejor\s+(que|sea))\b/.test(normalizedText)) return false
   return true
 }
 
