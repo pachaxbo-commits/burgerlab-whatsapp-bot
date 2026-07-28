@@ -278,6 +278,24 @@ async function handleIncomingMessage({ chatId, text }) {
         return
       }
 
+      // El pedido ya se registro y el cliente solo acusa recibo ("Perfecto", "Ya esta", "Dale").
+      // Esto NO puede llegar a la IA: el historial de la conversacion todavia tiene el resumen
+      // del pedido, asi que la IA lo lee, devuelve esos mismos items y el bot vuelve a preguntar
+      // "Confirmas el pedido?" - y con el "Si" del cliente el MISMO pedido entra dos veces al
+      // sistema. Ya le paso a un cliente real.
+      if (
+        !state.pendingOrder &&
+        !state.orderDraft?.items?.length &&
+        state.lastOrderId &&
+        isAcknowledgementText(text) &&
+        !isExplicitResetRequest(text)
+      ) {
+        const reply = 'Listo. Cualquier cosa me avisas, estamos atentos a tu pedido.'
+        conversations.add(chatId, 'bot', reply)
+        await whatsapp.sendText(chatId, reply)
+        return
+      }
+
       // El pedido anterior ya se confirmo (fue a cocina) y no hay nada pendiente/en borrador -
       // si el cliente ahora quiere agregar/cambiar algo, NO lo reescribimos solos (ya se le avisa
       // a caja/cocina y modificarlo por atras podria desincronizarse con lo que ya estan
@@ -509,6 +527,29 @@ async function handleIncomingMessage({ chatId, text }) {
         result.intent === 'order_ready' ||
         isOrderStartRequest(text),
       )
+
+      // Red de seguridad contra pedidos duplicados, por si algun mensaje que no es un acuse
+      // simple igual llega hasta aca. Con un pedido ya registrado y nada pendiente ni en
+      // borrador, los items que devuelve la IA solo pueden venir del historial de la
+      // conversacion, no de lo que el cliente acaba de escribir. Rearmar el pedido en ese caso
+      // es volver a pedir confirmacion por algo ya registrado, y termina en un duplicado. Para
+      // empezar de nuevo exigimos que el mensaje actual traiga contenido de pedido de verdad.
+      const wouldResurrectRegisteredOrder = Boolean(
+        state.lastOrderId &&
+        !state.pendingOrder &&
+        !state.orderDraft?.items?.length &&
+        mergedResult.items.length &&
+        !looksLikeConcreteOrderText(text) &&
+        !looksLikeStructuredOrderMessage(text) &&
+        !isExplicitResetRequest(text),
+      )
+
+      if (wouldResurrectRegisteredOrder) {
+        const reply = 'Tu pedido anterior ya quedó registrado. Si quieres pedir algo más, mándame el pedido nuevo y lo armamos.'
+        conversations.add(chatId, 'bot', reply)
+        await whatsapp.sendText(chatId, reply)
+        return
+      }
 
       if (hasOrderSignal) {
         conversations.setOrderDraft(chatId, mergedResult)
@@ -1682,6 +1723,15 @@ function isCancelText(text) {
 function isThanksText(text) {
   const normalized = normalizeText(text)
   return /^(ok|okay|listo|gracias|muchas gracias|ok gracias|dale gracias|perfecto gracias|ya gracias)$/.test(normalized)
+}
+
+// Acuse de recibo suelto: el cliente solo esta diciendo "entendido", sin pedir nada. Ojo que
+// varias de estas palabras tambien sirven para confirmar un pedido ("si", "dale", "listo"), asi
+// que esto solo se consulta cuando NO hay ningun pedido pendiente de confirmar - ahi no queda
+// nada que confirmar y tomarlo como pedido nuevo solo genera duplicados.
+function isAcknowledgementText(text) {
+  const normalized = normalizeText(text)
+  return /^(perfecto|excelente|genial|buenisimo|barbaro|chevere|de una|vale|bien|muy bien|va|ya esta|ya|listo|ok|okay|oka|dale|entendido|claro|correcto|si|sip|sale|joya)$/.test(normalized)
 }
 
 function isQuestionOrEditRequest(text) {
