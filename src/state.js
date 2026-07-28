@@ -48,6 +48,10 @@ export class ConversationStore {
     state.pendingOrder = null
     state.awaitingPaymentProof = null
     state.orderDraft = null
+    // lastOrderId tambien se olvida: sin esto, un cliente que vuelve despues de un rato (o pide
+    // explicitamente "otro pedido") seguia disparando la logica de "esto es una modificacion de
+    // tu pedido ya confirmado" para su proximo pedido, que es realmente uno nuevo y separado.
+    state.lastOrderId = null
     this.scheduleSave()
   }
 

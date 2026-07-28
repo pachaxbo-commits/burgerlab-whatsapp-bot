@@ -270,7 +270,7 @@ async function handleIncomingMessage({ chatId, text }) {
       // si el cliente ahora quiere agregar/cambiar algo, NO lo reescribimos solos (ya se le avisa
       // a caja/cocina y modificarlo por atras podria desincronizarse con lo que ya estan
       // preparando). Avisamos directo a los duenos en vez de tocar Firestore de mas.
-      if (!state.pendingOrder && !state.orderDraft?.items?.length && state.lastOrderId && looksLikeOrderModificationRequest(text)) {
+      if (!state.pendingOrder && !state.orderDraft?.items?.length && state.lastOrderId && looksLikeOrderModificationRequest(text) && !isExplicitResetRequest(text)) {
         await notifyOrderModificationRequest(chatId, state.lastOrderId, text)
         const reply = 'Tu pedido ya se envió a cocina. Le aviso al equipo para que te ayude directamente con ese cambio.'
         conversations.add(chatId, 'bot', reply)
@@ -1010,7 +1010,7 @@ function mergeOrderDraft(previous, result, text, { itemsAreComplete = false } = 
 
 function isExplicitResetRequest(text) {
   const norm = normalizeText(text)
-  return /\b(nuevo pedido|reiniciar|empezar de nuevo|borrar pedido|cancelar pedido|menu de cero)\b/.test(norm)
+  return /\b(nuevo pedido|pedido nuevo|otro pedido|otra vez|de nuevo|un pedido mas|otro mas|reiniciar|empezar de nuevo|borrar pedido|cancelar pedido|menu de cero)\b/.test(norm)
 }
 
 function inferFieldsFromText(text) {
