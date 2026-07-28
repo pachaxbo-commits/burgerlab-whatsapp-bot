@@ -12,11 +12,30 @@ import { config } from './config.js'
 
 const logger = pino({ level: 'silent' })
 
+const PROCESSED_MESSAGE_TTL_MS = 10 * 60 * 1000
+const PROCESSED_MESSAGE_MAX = 500
+
 export class WhatsappClient {
   constructor({ onMessage }) {
     this.onMessage = onMessage
     this.sock = null
     this.connected = false
+    this.processedMessageIds = new Map()
+  }
+
+  hasAlreadyProcessed(messageId) {
+    if (!messageId) return false
+    const now = Date.now()
+    for (const [id, seenAt] of this.processedMessageIds) {
+      if (now - seenAt > PROCESSED_MESSAGE_TTL_MS) this.processedMessageIds.delete(id)
+    }
+    if (this.processedMessageIds.has(messageId)) return true
+    this.processedMessageIds.set(messageId, now)
+    if (this.processedMessageIds.size > PROCESSED_MESSAGE_MAX) {
+      const oldestKey = this.processedMessageIds.keys().next().value
+      this.processedMessageIds.delete(oldestKey)
+    }
+    return false
   }
 
   async start() {
@@ -113,6 +132,7 @@ export class WhatsappClient {
 
     for (const message of event.messages) {
       if (message.key.fromMe) continue
+      if (this.hasAlreadyProcessed(message.key.id)) continue
       let chatId = message.key.remoteJidAlt || (message.key.remoteJid?.endsWith('@lid') ? message.key.participant : message.key.remoteJid) || message.key.remoteJid
       if (!chatId) continue
       if (chatId.endsWith('@g.us')) continue

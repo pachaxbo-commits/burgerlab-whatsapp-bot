@@ -292,20 +292,28 @@ Para realizar tu pedido, por favor envíanos tus datos en *un solo mensaje* con 
 📌 _Nota: Si tu pedido es para envío, puedes enviarnos tu ubicación de WhatsApp en un mensaje aparte._`
         conversations.add(chatId, 'bot', caption)
         await whatsapp.sendImage(chatId, menuImagePath, caption)
-        if (!looksLikeConcreteOrderText(text)) return
+        if (!looksLikeConcreteOrderText(text) && !looksLikeStructuredOrderMessage(text)) return
       }
 
-      if (isDeliveryPricingRequest(text)) {
+      const hasOrderInProgress = Boolean(state.orderDraft?.items?.length || state.pendingOrder)
+
+      if (isDeliveryPricingRequest(text) && !looksLikeStructuredOrderMessage(text) && !hasOrderInProgress) {
         await sendDeliveryPricingInfo(chatId)
         return
       }
 
-      if (isPaymentQrRequest(text) && !state.pendingOrder && !looksLikeConcreteOrderText(text)) {
+      if (
+        isPaymentQrRequest(text) &&
+        !state.pendingOrder &&
+        !looksLikeConcreteOrderText(text) &&
+        !looksLikeStructuredOrderMessage(text) &&
+        !hasOrderInProgress
+      ) {
         await sendPaymentQrInfo(chatId)
         return
       }
 
-      if (isRestaurantLocationRequest(text)) {
+      if (isRestaurantLocationRequest(text) && !looksLikeStructuredOrderMessage(text) && !hasOrderInProgress) {
         const reply = 'Claro, te envio la ubicacion de Burger Lab.'
         conversations.add(chatId, 'bot', reply)
         await whatsapp.sendText(chatId, reply)
@@ -393,6 +401,7 @@ Para realizar tu pedido, por favor envíanos tus datos en *un solo mensaje* con 
         message: text,
         conversation: state.messages,
         catalog,
+        currentDraft: state.orderDraft,
       })
 
       if (result.intent === 'confirm_order' && state.pendingOrder) {
@@ -438,7 +447,7 @@ Para realizar tu pedido, por favor envíanos tus datos en *un solo mensaje* con 
         return
       }
 
-      const mergedResult = mergeOrderDraft(state.orderDraft, result, text)
+      const mergedResult = mergeOrderDraft(state.orderDraft, result, text, { itemsAreComplete: true })
       conversations.setOrderDraft(chatId, mergedResult)
       const missingFields = getMissingOrderFields(mergedResult)
       if (mergedResult.items.length > 0 && missingFields.length > 0) {
@@ -903,9 +912,14 @@ function mergeOrderItems(prev, next, text) {
   return applyNotesToItems(merged, text)
 }
 
-function mergeOrderDraft(previous, result, text) {
+function mergeOrderDraft(previous, result, text, { itemsAreComplete = false } = {}) {
   const inferred = inferFieldsFromText(text)
-  const mergedItems = mergeOrderItems(previous?.items, result.items, text)
+  // Cuando el resultado ya viene con el pedido completo (ej. la IA vio el borrador actual y
+  // devolvio la lista final actualizada), no lo volvamos a combinar con lo anterior o se
+  // duplicarian cantidades. Si vino vacio, igual conservamos lo anterior como respaldo.
+  const mergedItems = itemsAreComplete
+    ? applyNotesToItems(result.items.length ? result.items : previous?.items || [], text)
+    : mergeOrderItems(previous?.items, result.items, text)
   const merged = {
     ...result,
     items: sanitizeOrderItems(mergedItems),
@@ -999,8 +1013,19 @@ function buildEmptyAiResult() {
   }
 }
 
+function isSimpleEnoughForQuickPath(normalizedText) {
+  if (/\btriple\b/.test(normalizedText)) return false
+  const burgerFamilyMentions = (normalizedText.match(/\b(burger lab|burguer lab|burger|hamburguesa|bbq|barbacoa)\b/g) || []).length
+  if (burgerFamilyMentions > 1) return false
+  if (/\by\s+(otra|otro|una|un|1|2|3)\b/.test(normalizedText)) return false
+  return true
+}
+
 function inferSimpleOrderFromCatalog(text, catalog) {
   const normalized = normalizeText(text)
+  if (!isSimpleEnoughForQuickPath(normalized)) {
+    return { ...buildEmptyAiResult(), items: [] }
+  }
   const flexibleItems = inferFlexibleMenuItems(normalized, catalog)
   const products = [...(catalog.products || [])]
     .filter((product) => product.isVisible !== false && product.isActive !== false)
@@ -1055,14 +1080,16 @@ function inferFlexibleMenuItems(normalizedText, catalog) {
     })
   }
 
-  if (/\bbbq\b/.test(normalizedText)) {
-    const size = /\bdoble\b/.test(normalizedText) ? 'doble' : 'simple'
+  const isBurgerSizeDoble = /\bdoble\b(?!\s*(porcion|porciones|racion|raciones))/.test(normalizedText)
+
+  if (/\b(bbq|barbacoa)\b/.test(normalizedText)) {
+    const size = isBurgerSizeDoble ? 'doble' : 'simple'
     const papas = /\bsin\s+papas?\b/.test(normalizedText) ? 'sin-papas' : 'con-papas'
     addProduct(`bbq-${size}-${papas}`, inferQuantityBeforeProduct(normalizedText, 'bbq'))
   }
 
-  if (/\b(burger lab|burguer lab|burger|hamburguesa)\b/.test(normalizedText) && !/\bbbq\b/.test(normalizedText)) {
-    const size = /\bdoble\b/.test(normalizedText) ? 'doble' : 'simple'
+  if (/\b(burger lab|burguer lab|burger|hamburguesa)\b/.test(normalizedText) && !/\b(bbq|barbacoa)\b/.test(normalizedText)) {
+    const size = isBurgerSizeDoble ? 'doble' : 'simple'
     const papas = /\bsin\s+papas?\b/.test(normalizedText) ? 'sin-papas' : 'con-papas'
     addProduct(`burger-lab-${size}-${papas}`, inferQuantityBeforeProduct(normalizedText, 'burger'))
   }
@@ -1338,17 +1365,23 @@ function isMenuRequest(text) {
     .replace(/\p{Diacritic}/gu, '')
     .toLowerCase()
 
-  return /\b(menu|carta|precios|precio|hamburguesas|promos|promociones|catalogo)\b/.test(normalized)
+  return /\b(menu|carta|catalogo|promos|promociones)\b/.test(normalized)
+}
+
+function looksLikeStructuredOrderMessage(text) {
+  const inferred = inferFieldsFromText(text)
+  const providedCount = [inferred.customerName, inferred.paymentMethod, inferred.fulfillmentType].filter(Boolean).length
+  return providedCount >= 2
 }
 
 function isOrderStartRequest(text) {
   const normalized = normalizeText(text)
-  return /\b(quiero|quisiera|pedido|pedir|ordenar|hamburguesa|burger|bbq|simple|doble|papas|gaseosa|mocochinchi|agua|refresco)\b/.test(normalized)
+  return /\b(quiero|quisiera|pedido|pedir|ordenar|hamburguesa|hamburguesas|burger|bbq|barbacoa|simple|doble|triple|papas|gaseosa|mocochinchi|agua|refresco)\b/.test(normalized)
 }
 
 function looksLikeConcreteOrderText(text) {
   const normalized = normalizeText(text)
-  return /\b(burger|hamburguesa|bbq|simple|doble|papas|tocino|pina|gaseosa|coca|fanta|sprite|agua|mocochinchi|jamaica|tamarindo|refresco|helado)\b/.test(normalized)
+  return /\b(burger|hamburguesa|hamburguesas|bbq|barbacoa|simple|doble|triple|papas|tocino|pina|gaseosa|coca|fanta|sprite|agua|mocochinchi|jamaica|tamarindo|refresco|helado)\b/.test(normalized)
 }
 
 function isDeliveryPricingRequest(text) {

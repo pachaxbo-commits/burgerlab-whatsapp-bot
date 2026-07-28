@@ -41,8 +41,22 @@ const orderSchema = z.object({
     .default([]),
 })
 
-export async function understandMessage({ message, conversation, catalog }) {
-  const prompt = buildPrompt({ message, conversation, catalog })
+function buildEmptyAiResult() {
+  return {
+    intent: 'order_draft',
+    reply: '',
+    missingFields: [],
+    customerName: '',
+    customerPhone: '',
+    paymentMethod: null,
+    fulfillmentType: null,
+    deliveryAddress: '',
+    items: [],
+  }
+}
+
+export async function understandMessage({ message, conversation, catalog, currentDraft }) {
+  const prompt = buildPrompt({ message, conversation, catalog, currentDraft })
   let text = '{}'
   if (config.openaiApiKey) {
     try {
@@ -162,7 +176,7 @@ function isTemporaryGeminiError(error) {
   return status === 429 || status === 500 || status === 503 || /UNAVAILABLE|high demand|quota|rate/i.test(message)
 }
 
-function buildPrompt({ message, conversation, catalog }) {
+function buildPrompt({ message, conversation, catalog, currentDraft }) {
   const catalogLines = catalog.products
     .map((product) => {
       // Combina los extras del producto y los quickExtras globales (solo para hamburguesas)
@@ -209,13 +223,25 @@ Objetivo:
 - Si el metodo es QR, puede ser pago anticipado y recojo en restaurante.
 - Si es delivery, pide ubicacion de WhatsApp o direccion. Si manda direccion escrita, aceptala y colocala en deliveryAddress.
 - No calcules costo de envio. El delivery lo cobra la moto directo al cliente.
-- REGLA ABSOLUTA DE EXTRAS: Solo asigna un extra si el cliente nombró de forma explícita el nombre exacto de ese extra. Queda ESTRICTAMENTE PROHIBIDO adivinar, asumir o sustituir extras (ej. nunca cambies piña por salsa verde, ni agregues salsas no pedidas).
+- REGLA ABSOLUTA DE EXTRAS: Solo asigna un extra si el cliente nombró de forma explícita el nombre exacto de ese extra (aceptando sinónimos claros: "una porción de papas extra", "una ración de papas" y "doble porción de papas" se refieren al mismo extra de papas). Queda ESTRICTAMENTE PROHIBIDO adivinar, asumir o sustituir extras (ej. nunca cambies piña por salsa verde, ni agregues salsas no pedidas).
+- IMPORTANTE - un mensaje puede describir VARIOS items distintos a la vez (ej. "una BBQ con doble tocino y una Burger Lab sin cebolla"): identifica cada hamburguesa/producto por separado como un item independiente en la lista "items", y asegurate de que cada extra, nota o modificador quede asociado SOLO al item al que el cliente se refería, no a todos los items del pedido.
+- Ten cuidado de no confundir el tamaño de la hamburguesa (simple/doble) con la cantidad de un extra/topping (ej. "doble porción de tocino" o "doble tocino" es 2 unidades del extra tocino en una hamburguesa que puede seguir siendo simple; no la conviertas en hamburguesa doble solo por esa frase).
+- El catálogo normalmente solo tiene hamburguesas "simple" y "doble". Si el cliente pide "triple" (u otra variante superior que no exista), trátala como la version "doble" del producto y agrega un extra de carne adicional si existe algo como "Carne extra" en el catálogo; si no existe ese extra, deja una nota indicando "carne extra (triple)" en el item y menciona el ajuste en el reply para que el cliente lo confirme.
+- Si el cliente menciona un producto genérico sin especificar cuál (ej. solo dice "2 hamburguesas" sin decir cuál del menú), NO adivines ni elijas por él: deja items vacío para eso, indica en missingFields que falta especificar cuál hamburguesa, y en el reply pregunta explícitamente cuáles hamburguesas del menú desea (menciona las opciones: Burger Lab o BBQ Lab, simple o doble, con o sin papas).
+- Si el cliente pide agregar, aumentar, quitar o cambiar algo de un pedido que ya venías armando en la conversación, ACTUALIZA la lista de items combinando lo nuevo con lo que ya tenías (no reinicies el pedido ni vuelvas a pedir datos que el cliente ya dio antes en la conversación).
 - Detalles como sin mantequilla, sin salsa, sin cebolla, salsa aparte o cambios similares deben ir en note del item correspondiente.
 - Si falta algo, missingFields debe indicarlo.
 
 Catalogo disponible:
 ${catalogLines}
-
+${currentDraft?.items?.length ? `
+Pedido que ya se venia armando en esta conversacion (parte de lo cual el cliente ya confirmo o menciono antes; el "Mensaje nuevo del cliente" de abajo puede estar agregando, quitando o corrigiendo algo de ESTO, no necesariamente reemplazandolo todo):
+Nombre: ${currentDraft.customerName || '(sin definir)'}
+Metodo de pago: ${currentDraft.paymentMethod || '(sin definir)'}
+Entrega: ${currentDraft.fulfillmentType || '(sin definir)'}
+Items:
+${currentDraft.items.map((item) => `- ${item.quantity} x ${item.name}${item.extras?.length ? ` + ${item.extras.map((e) => e.name).join(', ')}` : ''}${item.note ? ` (${item.note})` : ''}`).join('\n')}
+` : ''}
 Conversacion resumida:
 ${conversation.map((entry) => `${entry.role}: ${entry.text}`).join('\n')}
 
