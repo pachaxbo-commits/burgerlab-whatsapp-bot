@@ -22,6 +22,7 @@ export class WhatsappClient {
     this.connected = false
     this.processedMessageIds = new Map()
     this.testMode = testMode
+    this.consecutiveDisconnects = 0
   }
 
   // Simula un mensaje entrante del cliente sin pasar por WhatsApp/Baileys - para el chat de
@@ -178,6 +179,9 @@ export class WhatsappClient {
     const { connection, lastDisconnect, qr } = update
 
     if (qr) {
+      // Baileys esta pidiendo un QR nuevo de verdad (no tiene o descarto la sesion guardada) -
+      // esto es la señal de que ya no esta atascado reintentando con credenciales rotas.
+      this.consecutiveDisconnects = 0
       console.log('Escanea este QR con WhatsApp:')
       qrcode.generate(qr, { small: true })
       QRCode.toFile(config.qrPath, qr, { width: 720, margin: 2 })
@@ -187,6 +191,7 @@ export class WhatsappClient {
 
     if (connection === 'open') {
       this.connected = true
+      this.consecutiveDisconnects = 0
       console.log('WhatsApp conectado.')
     }
 
@@ -194,10 +199,34 @@ export class WhatsappClient {
       this.connected = false
       const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut
-      console.log(`WhatsApp desconectado. Reconectar: ${shouldReconnect}`)
-      if (shouldReconnect) {
-        setTimeout(() => void this.start(), 2000)
+      this.consecutiveDisconnects += 1
+      console.log(`WhatsApp desconectado (codigo ${statusCode ?? 'desconocido'}). Reconectar: ${shouldReconnect}. Intentos seguidos sin conectar: ${this.consecutiveDisconnects}`)
+
+      if (!shouldReconnect) return
+
+      // Si se desconecta muchas veces seguidas sin nunca llegar a "conectado" ni pedir un QR
+      // nuevo, la sesion guardada (auth_info) probablemente quedo invalidada del lado de
+      // WhatsApp (ej. por muchos reinicios seguidos durante despliegues). Seguir reintentando
+      // con esas mismas credenciales rotas cada pocos segundos, sin parar, no arregla nada y
+      // satura los servidores de WhatsApp - mala señal para la cuenta, ademas de que nunca vas a
+      // poder ver un QR nuevo porque Baileys sigue intentando "reanudar" la sesion vieja en vez
+      // de pedir una nueva. Despues de varios intentos seguidos, borramos la sesion guardada y
+      // arrancamos de cero para forzar un QR nuevo, sin necesitar entrar manualmente a "Cerrar
+      // sesion".
+      const MAX_CONSECUTIVE_DISCONNECTS = 8
+      if (this.consecutiveDisconnects >= MAX_CONSECUTIVE_DISCONNECTS) {
+        console.log(`Demasiadas desconexiones seguidas (${this.consecutiveDisconnects}). Borrando la sesion guardada y reiniciando para pedir un QR nuevo.`)
+        this.consecutiveDisconnects = 0
+        fs.rm(config.authDir, { recursive: true, force: true })
+          .catch(() => undefined)
+          .finally(() => {
+            setTimeout(() => void this.start(), 2000)
+          })
+        return
       }
+
+      const delay = Math.min(2000 * 2 ** (this.consecutiveDisconnects - 1), 60000)
+      setTimeout(() => void this.start(), delay)
     }
   }
 }
