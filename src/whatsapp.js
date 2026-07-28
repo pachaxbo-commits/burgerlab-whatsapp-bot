@@ -1,4 +1,5 @@
 import makeWASocket, {
+  Browsers,
   DisconnectReason,
   fetchLatestBaileysVersion,
   useMultiFileAuthState,
@@ -48,14 +49,26 @@ export class WhatsappClient {
 
   async start() {
     const { state, saveCreds } = await useMultiFileAuthState(config.authDir)
-    const { version } = await fetchLatestBaileysVersion()
+
+    // fetchLatestBaileysVersion pide un archivo a raw.githubusercontent.com; si esa
+    // peticion falla (red de Railway, rate limit, etc.) la libreria NO tira error: devuelve
+    // en silencio una version vieja hardcodeada que WhatsApp ya rechaza con 405 en el
+    // handshake (isLatest queda en false, pero eso nunca se estaba revisando). Por eso el
+    // 405 pasaba siempre en Railway aunque local funcionaba: la red local si llegaba a
+    // GitHub. FALLBACK_VERSION es una version reciente confirmada como valida, para no
+    // depender de que esa peticion externa funcione.
+    const FALLBACK_VERSION = [2, 3000, 1035194821]
+    const { version, isLatest, error } = await fetchLatestBaileysVersion()
+    if (!isLatest) {
+      console.log(`No se pudo confirmar la version mas reciente de WhatsApp Web (usando fallback ${FALLBACK_VERSION.join('.')}). Motivo:`, error?.message || error)
+    }
 
     this.sock = makeWASocket({
-      version,
+      version: isLatest ? version : FALLBACK_VERSION,
       auth: state,
       printQRInTerminal: false,
       logger,
-      browser: ['Burger Lab Bot', 'Chrome', '1.0.0'],
+      browser: Browsers.macOS('Chrome'),
     })
 
     this.sock.ev.on('creds.update', saveCreds)
