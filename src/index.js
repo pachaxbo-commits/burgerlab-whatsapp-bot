@@ -670,8 +670,10 @@ app.post('/whatsapp/logout', requireToken, async (_req, res) => {
   await whatsapp.logout()
   await fs.rm(config.authDir, { recursive: true, force: true }).catch(() => undefined)
   await fs.rm(config.qrPath, { force: true }).catch(() => undefined)
-  setTimeout(() => void whatsapp.start(), 1500)
-  res.json({ ok: true })
+  if (!WHATSAPP_CONNECTION_DISABLED) {
+    setTimeout(() => void whatsapp.start(), 1500)
+  }
+  res.json({ ok: true, whatsappConnectionDisabled: WHATSAPP_CONNECTION_DISABLED })
 })
 
 app.get('/debug/firebase-write', requireToken, async (_req, res) => {
@@ -750,9 +752,20 @@ app.post('/orders/:orderId/confirmed', requireToken, async (req, res) => {
   res.json({ ok: true })
 })
 
+// Interruptor de emergencia: la sesion empezo a fallar con error 405 al reconectar y quedo
+// reintentando sin parar. Golpear los servidores de WhatsApp con reconexiones fallidas repetidas
+// es un riesgo real para la cuenta, asi que frenamos los intentos de conexion por completo
+// (el resto del bot - API, salud - sigue funcionando) hasta confirmar el arreglo real.
+// TODO: sacar el "|| true" en cuanto se confirme resuelto el error 405.
+const WHATSAPP_CONNECTION_DISABLED = process.env.WHATSAPP_CONNECTION_DISABLED === '1' || true
+
 if (!TEST_MODE) {
-  await whatsapp.start()
-  startConfirmationNoticePolling()
+  if (WHATSAPP_CONNECTION_DISABLED) {
+    console.log('WHATSAPP_CONNECTION_DISABLED: no se intentara conectar a WhatsApp por ahora (freno de emergencia por error 405). El resto del bot sigue activo.')
+  } else {
+    await whatsapp.start()
+    startConfirmationNoticePolling()
+  }
 
   const server = app.listen(config.port, () => {
     console.log(`Bot API escuchando en http://localhost:${config.port}`)
