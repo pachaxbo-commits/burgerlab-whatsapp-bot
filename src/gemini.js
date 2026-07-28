@@ -214,7 +214,7 @@ Objetivo:
 - Si el cliente NO usa la plantilla o envía sus datos en varios mensajes informales, PROCESA E INFIERE IGUALMENTE toda la información que el cliente vaya dando paso a paso sin exigir obligatoriamente la plantilla.
 - No crees el pedido hasta tener los datos requeridos (nombre, numero de celular, items del catálogo y tipo de entrega).
 - Si el cliente pide extras/adicionales (ej. "con extra de queso", "salsa golf adicional"), agrégalos a la lista "extras" de ese item con el id, name y price exactos que figuran en el catálogo.
-- Si pide varias unidades de un mismo extra (ej. "2 de salsa golf", "con doble de salsa bbq"), agrega ese extra múltiples veces en la lista "extras" del item correspondiente (tantas veces como se haya pedido, ej: 2 elementos iguales si pidió doble).
+- Si pide varias unidades de un mismo extra (ej. "2 de salsa golf", "con doble de salsa bbq", "doble porción de tocino extra", "2 porciones de papas extra"), agrega ese extra múltiples veces en la lista "extras" del item correspondiente (tantas veces como se haya pedido: "doble"/"2" = 2 elementos iguales, "triple"/"3" = 3 elementos iguales). Esto aplica igual para extras rápidos y extras normales del producto, no solo salsas.
 - Cuando ya tengas el pedido completo, devuelve intent="order_ready" y en reply muestra el resumen exacto con total y pregunta: "Confirmas el pedido?"
 - Si el cliente confirma un resumen pendiente con palabras como si, confirmo, correcto, dale o ok, devuelve intent="confirm_order".
 - Si el cliente cancela o quiere cambiar, devuelve intent="cancel_order" u "order_draft" segun corresponda.

@@ -961,8 +961,13 @@ function inferFieldsFromText(text) {
   const mapsMatch = rawText.match(/https:\/\/maps\.google\.com\/\?q=-?\d+(?:\.\d+)?,-?\d+(?:\.\d+)?/i)
   if (mapsMatch) {
     deliveryAddress = mapsMatch[0]
-  } else if (fulfillmentType === 'delivery' || /\b(ubicacion|direccion|calle|av|avenida|barrio|zona|pasaje|esquina)\b/i.test(rawText)) {
-    if (rawText.length >= 5 && !isConfirmText(text) && !isCancelText(text) && !paymentMethod) {
+  } else if (/\b(ubicacion|direccion|calle|av|avenida|barrio|zona|pasaje|esquina)\b/i.test(rawText)) {
+    // Solo tratamos el mensaje entero como direccion si de verdad PARECE solo una direccion
+    // (corto, sin productos del menu) - antes cualquier mensaje que mencionara "delivery" en
+    // cualquier parte (incluido el pedido completo con nombre/celular/items) se guardaba entero
+    // como direccion, dejando el campo real de ubicacion siempre "lleno" con basura.
+    const looksLikeOrderNotAddress = /\b(burger|hamburguesa|bbq|barbacoa|papas|tocino|pina|gaseosa|coca|fanta|sprite|agua|mocochinchi|jamaica|tamarindo|refresco|helado)\b/i.test(normalized)
+    if (rawText.length >= 5 && rawText.length <= 140 && !looksLikeOrderNotAddress && !isConfirmText(text) && !isCancelText(text) && !paymentMethod) {
       deliveryAddress = rawText
     }
   }
@@ -1186,13 +1191,14 @@ function inferExtrasFromText(normalizedText, product, catalog) {
 
 function inferExtraQuantity(normalizedText, normalizedExtraName) {
   const index = normalizedText.indexOf(normalizedExtraName)
-  const before = index > 0 ? normalizedText.slice(Math.max(0, index - 25), index) : ''
+  const before = index > 0 ? normalizedText.slice(Math.max(0, index - 35), index) : ''
+  const connector = '(x|de|porcion|porciones|racion|raciones|extra|extras|adicional|adicionales)?\\s*(de)?'
 
-  const digitMatch = before.match(/\b([2-9])\s*(x|de|extra|extras|adicional|adicionales)?\s*$/)
+  const digitMatch = before.match(new RegExp(`\\b([2-9])\\s*${connector}\\s*$`))
   if (digitMatch) return Number(digitMatch[1])
 
-  if (/\b(doble|dos)\s*(de|extra|extras|adicional)?\s*$/.test(before)) return 2
-  if (/\b(triple|tres)\s*(de|extra|extras|adicional)?\s*$/.test(before)) return 3
+  if (new RegExp(`\\b(doble|dos)\\s*${connector}\\s*$`).test(before)) return 2
+  if (new RegExp(`\\b(triple|tres)\\s*${connector}\\s*$`).test(before)) return 3
 
   return 1
 }
