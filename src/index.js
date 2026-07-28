@@ -225,7 +225,7 @@ async function handleIncomingMessage({ chatId, text }) {
       }
 
       if (state.pendingOrder && isConfirmText(text)) {
-        if (state.pendingOrder.orderInput.expectedPaymentMethod === 'qr') {
+        if (shouldRequestQrPaymentProof(state.pendingOrder.orderInput)) {
           await requestQrPaymentProof(chatId, state.pendingOrder.orderInput, state.pendingOrder.summary)
           return
         }
@@ -384,7 +384,7 @@ async function handleIncomingMessage({ chatId, text }) {
         }
 
         const summary = buildOrderSummary(orderInput)
-        if (orderInput.expectedPaymentMethod === 'qr') {
+        if (shouldRequestQrPaymentProof(orderInput)) {
           await requestQrPaymentProof(chatId, orderInput, summary)
           return
         }
@@ -414,7 +414,7 @@ async function handleIncomingMessage({ chatId, text }) {
 
         const orderInput = buildOrderInput({ result: mergedResult, chatId })
         const summary = buildOrderSummary(orderInput)
-        if (orderInput.expectedPaymentMethod === 'qr') {
+        if (shouldRequestQrPaymentProof(orderInput)) {
           await requestQrPaymentProof(chatId, orderInput, summary)
           return
         }
@@ -433,7 +433,7 @@ async function handleIncomingMessage({ chatId, text }) {
       })
 
       if (result.intent === 'confirm_order' && state.pendingOrder) {
-        if (state.pendingOrder.orderInput.expectedPaymentMethod === 'qr') {
+        if (shouldRequestQrPaymentProof(state.pendingOrder.orderInput)) {
           await requestQrPaymentProof(chatId, state.pendingOrder.orderInput, state.pendingOrder.summary)
           return
         }
@@ -569,7 +569,7 @@ async function handleIncomingMessage({ chatId, text }) {
 
         const orderInput = buildOrderInput({ result: mergedResult, chatId })
         const summary = buildOrderSummary(orderInput)
-        if (orderInput.expectedPaymentMethod === 'qr') {
+        if (shouldRequestQrPaymentProof(orderInput)) {
           await requestQrPaymentProof(chatId, orderInput, summary)
           return
         }
@@ -830,6 +830,13 @@ process.on('unhandledRejection', (error) => {
 
 export { handleIncomingMessage, whatsapp, TEST_MODE }
 
+// Pedirle el comprobante por el chat solo tiene sentido si el cliente va a pagar por QR AHORA.
+// Si avisa que paga en persona ("con qr pero pagare ahi"), mandarle el QR y quedarse esperando
+// un comprobante que nunca va a llegar deja el pedido trabado sin registrarse.
+function shouldRequestQrPaymentProof(orderInput) {
+  return orderInput?.expectedPaymentMethod === 'qr' && !orderInput?.paymentOnArrival
+}
+
 async function requestQrPaymentProof(chatId, orderInput, summary) {
   conversations.setAwaitingPaymentProof(chatId, orderInput, summary)
   const deliveryLine = orderInput.fulfillmentType === 'delivery'
@@ -1047,15 +1054,24 @@ function mergeOrderDraft(previous, result, text, { itemsAreComplete = false } = 
   // duplicarian cantidades. Si vino vacio, igual conservamos lo anterior como respaldo.
   // Tampoco le aplicamos applyNotesToItems - la IA ya pone la nota (sin cebolla, sin salsa, etc)
   // en su propia respuesta, y volver a agregarla por regex duplicaba el texto en la nota final.
-  const mergedItems = itemsAreComplete
-    ? (result.items.length ? result.items : previous?.items || [])
-    : mergeOrderItems(previous?.items, result.items, text)
+  // La IA rearma la lista de items en CADA respuesta, incluso cuando el mensaje del cliente no
+  // hablaba de comida, y a veces la devuelve cambiada. A un cliente real le convirtio
+  // "Tocino, Tocino" en "Salsa BBQ, Salsa BBQ" (y le bajo el total de Bs 30 a Bs 26) cuando lo
+  // unico que escribio fue que pagaria con QR. Un mensaje que no menciona productos ni pide un
+  // cambio no puede tocar lo que el cliente ya vio y aprobo.
+  const keepPreviousItems = Boolean(previous?.items?.length) && !messageCanChangeItems(text)
+  const mergedItems = keepPreviousItems
+    ? previous.items
+    : itemsAreComplete
+      ? (result.items.length ? result.items : previous?.items || [])
+      : mergeOrderItems(previous?.items, result.items, text)
   const merged = {
     ...result,
     items: sanitizeOrderItems(mergedItems),
     customerName: result.customerName || inferred.customerName || previous?.customerName || inferred.weakGuessedName || '',
     customerPhone: result.customerPhone || inferred.customerPhone || previous?.customerPhone || '',
     paymentMethod: result.paymentMethod || inferred.paymentMethod || previous?.paymentMethod || null,
+    paymentOnArrival: Boolean(inferred.paymentOnArrival || previous?.paymentOnArrival),
     fulfillmentType: result.fulfillmentType || inferred.fulfillmentType || previous?.fulfillmentType || null,
     deliveryAddress: result.deliveryAddress || inferred.deliveryAddress || previous?.deliveryAddress || '',
   }
@@ -1122,6 +1138,7 @@ function inferFieldsFromText(text) {
 
   return {
     paymentMethod,
+    paymentOnArrival: isPayOnArrivalText(text),
     fulfillmentType,
     deliveryAddress,
     // introducedName ("me llamo X"/"soy X") es una senal fuerte y explicita - puede corregir un
@@ -1468,7 +1485,7 @@ async function tryRecoverOrderFromText(chatId, text, state) {
 
     const orderInput = buildOrderInput({ result: fallbackResult, chatId })
     const summary = buildOrderSummary(orderInput)
-    if (orderInput.expectedPaymentMethod === 'qr') {
+    if (shouldRequestQrPaymentProof(orderInput)) {
       await requestQrPaymentProof(chatId, orderInput, summary)
       return { handled: true, reply: '' }
     }
@@ -1495,6 +1512,7 @@ function pendingOrderToDraft(pendingOrder) {
     customerName: orderInput.customerName || '',
     customerPhone: orderInput.customerPhone || '',
     paymentMethod: orderInput.expectedPaymentMethod || null,
+    paymentOnArrival: Boolean(orderInput.paymentOnArrival),
     fulfillmentType: orderInput.fulfillmentType || null,
     deliveryAddress: orderInput.deliveryAddress || '',
     items: (orderInput.items || []).map((item) => ({
@@ -1540,6 +1558,7 @@ function buildOrderInput({ result, chatId }) {
     deliveryQuoteStatus: result.fulfillmentType === 'delivery' ? 'manual_review' : 'not_needed',
     deliveryQuoteNote: result.fulfillmentType === 'delivery' ? 'El envio lo cobra el delivery directamente al cliente.' : '',
     expectedPaymentMethod: result.paymentMethod || 'cash',
+    paymentOnArrival: Boolean(result.paymentOnArrival),
     fulfillmentType: result.fulfillmentType || 'pickup',
     customerName: result.customerName,
     customerPhone: result.customerPhone,
@@ -1591,6 +1610,30 @@ function looksLikeOrderModificationRequest(text) {
 function looksLikeConcreteOrderText(text) {
   const normalized = normalizeText(text)
   return /\b(burger|hamburguesa|hamburguesas|bbq|barbacoa|simple|doble|triple|papas|tocino|pina|gaseosa|coca|fanta|sprite|agua|mocochinchi|jamaica|tamarindo|refresco|helado)\b/.test(normalized)
+}
+
+// Solo un mensaje que nombra productos o pide explicitamente un cambio puede modificar los
+// items del pedido. Ojo con agregar palabras sueltas y comunes aca (como "con" o "por"): son
+// justo las que aparecen en mensajes que NO hablan de comida ("que sea con qr por favor"), y
+// dejarlas pasar reabre el bug de que la IA reescriba el pedido por su cuenta.
+function messageCanChangeItems(text) {
+  const normalized = normalizeText(text)
+  return (
+    looksLikeConcreteOrderText(text) ||
+    isOrderStartRequest(text) ||
+    /\b(agrega|agregame|agregale|aumenta|aumentame|anade|anadir|saca|sacame|sacale|saquen|quita|quitame|quitale|elimina|eliminar|borra|borrar|cambia|cambiame|cambiale|modifica|modificame|sin|extra|extras|adicional|adicionales|porcion|porciones)\b/.test(normalized)
+  )
+}
+
+// "pagare ahi", "pago al recoger", "cancelo cuando llegue": el cliente avisa que va a pagar en
+// persona, no por el chat. Aunque diga QR no hay que mandarle el QR ni quedarse esperando un
+// comprobante, porque nunca lo va a enviar y el pedido queda trabado sin registrarse.
+function isPayOnArrivalText(text) {
+  const normalized = normalizeText(text)
+  return (
+    /\b(pagare|pagaria|pago|pagar|cancelo|cancelare|abono|abonare)\b/.test(normalized) &&
+    /\b(ahi|ahi mismo|alli|alla|en el local|en el restaurante|al recoger|al retirar|cuando recoja|cuando llegue|cuando llegues|al llegar|al recibir|en persona|al delivery|al repartidor|con el delivery|contra entrega|en la entrega)\b/.test(normalized)
+  )
 }
 
 function isDeliveryPricingRequest(text) {
@@ -1757,11 +1800,16 @@ function buildOrderSummary(orderInput) {
       ? buildDeliverySummaryLines(orderInput)
       : ['Recojo en restaurante']
 
-  const paymentLabel = {
+  const basePaymentLabel = {
     cash: 'Efectivo',
     qr: 'QR',
     mixed: 'Mixto',
   }[orderInput.expectedPaymentMethod] || 'Efectivo'
+  // Si paga en persona hay que dejarlo escrito: caja no debe esperar ningun comprobante por el
+  // chat, y quien entrega tiene que saber que todavia tiene que cobrar.
+  const paymentLabel = orderInput.paymentOnArrival
+    ? `${basePaymentLabel} (paga ${orderInput.fulfillmentType === 'delivery' ? 'al recibir el pedido' : 'en el restaurante'})`
+    : basePaymentLabel
 
   return [
     'Te paso el resumen de tu pedido:',
