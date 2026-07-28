@@ -427,6 +427,13 @@ const whatsapp = new WhatsappClient({
         return
       }
 
+      if (result.intent === 'menu_request' && !result.items.length) {
+        const caption = buildOrderTemplateMessage()
+        conversations.add(chatId, 'bot', caption)
+        await whatsapp.sendImage(chatId, menuImagePath, caption)
+        return
+      }
+
       const mergedResult = mergeOrderDraft(state.orderDraft, result, text, { itemsAreComplete: true })
       conversations.setOrderDraft(chatId, mergedResult)
       const missingFields = getMissingOrderFields(mergedResult)
@@ -473,8 +480,12 @@ const whatsapp = new WhatsappClient({
 
       // El cliente parece estar intentando pedir (no es un saludo/pregunta suelta) pero el
       // mensaje no se pudo interpretar en items reales: pedirle que use el formato del ejemplo
-      // en vez de que la IA improvise una respuesta distinta cada vez.
-      if ((result.intent === 'order_draft' || result.intent === 'order_ready') && !mergedResult.items.length) {
+      // en vez de que la IA improvise una respuesta distinta cada vez. El chequeo de intent por
+      // si solo no es 100% confiable (la IA a veces clasifica un intento de pedido como
+      // "question" u "other"), asi que tambien nos apoyamos en isOrderStartRequest sobre el
+      // texto real del cliente como red de seguridad.
+      const seemsLikeOrderAttempt = result.intent === 'order_draft' || result.intent === 'order_ready' || isOrderStartRequest(text)
+      if (seemsLikeOrderAttempt && !mergedResult.items.length) {
         const reply = ORDER_FORMAT_REDIRECT_MESSAGE
         conversations.add(chatId, 'bot', reply)
         await whatsapp.sendText(chatId, reply)

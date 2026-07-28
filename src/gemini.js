@@ -18,7 +18,7 @@ const numberOrDefault = (fallback) =>
   }, z.number())
 
 const orderSchema = z.object({
-  intent: z.enum(['greeting', 'question', 'order_draft', 'order_ready', 'confirm_order', 'cancel_order', 'delivery_pricing', 'payment_qr_request', 'human_help', 'other']),
+  intent: z.enum(['greeting', 'question', 'menu_request', 'order_draft', 'order_ready', 'confirm_order', 'cancel_order', 'delivery_pricing', 'payment_qr_request', 'human_help', 'other']),
   reply: z.string(),
   missingFields: z.array(z.string()).default([]),
   customerName: z.string().default(''),
@@ -206,12 +206,12 @@ Objetivo:
 - Si el cliente saluda o hace una pregunta normal del negocio, responde de forma amigable y ofrece tomar el pedido.
 - Si el cliente pregunta cuánto cuesta el delivery/envio/tarifa, devuelve intent="delivery_pricing".
 - Si el cliente quiere pagar por QR o pide QR/comprobante, devuelve intent="payment_qr_request".
+- Si el cliente pide ver el menú, la carta, los productos o precios disponibles (incluso con errores de tipeo o frases raras como "mandame el menu", "el me u", "que tienen"), devuelve intent="menu_request". El sistema le manda la imagen real del menú automáticamente - en el campo "reply" NO listes tú los productos ni inventes tu propia versión del menú.
 - Si el cliente hace preguntas muy raras, incoherentes, groseras, no relacionadas con comida/restaurante o que requieren decision humana, devuelve intent="human_help".
-- Cuando pidas los datos del pedido o falte información, guíale a enviar todo en un solo mensaje con: Nombre o apellido, Delivery o Recoger (con ubicación GPS si es delivery), Número de Celular, y el Pedido (un renglón por hamburguesa/producto).
+- NUNCA improvises ni redactes tú mismo el formato/estructura de datos que se le pide al cliente (nombre, celular, entrega, pedido) en el campo "reply". Si el cliente necesita ese formato (porque quiere pedir pero aun no dio todos los datos, o no diste con items claros), devuelve intent="order_draft" con items vacío o incompleto y deja missingFields indicando lo que falta - el sistema se encarga de mandarle el formato/ejemplo correcto siempre igual, tu "reply" en ese caso no se usa.
 - El método de pago NO es un dato obligatorio: si el cliente no menciona "QR" en ningún momento, asume que paga en efectivo (paymentMethod="cash") y NO se lo preguntes. Solo si el cliente escribe explícitamente que quiere pagar por QR, usa paymentMethod="qr".
 - El número de celular SÍ es un dato obligatorio (customerPhone). Si el cliente no lo dio, indícalo en missingFields.
-- Aclara al cliente que la ubicación de WhatsApp la puede enviar en un mensaje aparte si es envío.
-- Si el cliente NO usa esta plantilla o envía sus datos en varios mensajes informales, PROCESA E INFIERE IGUALMENTE toda la información que el cliente vaya dando paso a paso sin exigir obligatoriamente la plantilla.
+- Si el cliente NO usa la plantilla o envía sus datos en varios mensajes informales, PROCESA E INFIERE IGUALMENTE toda la información que el cliente vaya dando paso a paso sin exigir obligatoriamente la plantilla.
 - No crees el pedido hasta tener los datos requeridos (nombre, numero de celular, items del catálogo y tipo de entrega).
 - Si el cliente pide extras/adicionales (ej. "con extra de queso", "salsa golf adicional"), agrégalos a la lista "extras" de ese item con el id, name y price exactos que figuran en el catálogo.
 - Si pide varias unidades de un mismo extra (ej. "2 de salsa golf", "con doble de salsa bbq"), agrega ese extra múltiples veces en la lista "extras" del item correspondiente (tantas veces como se haya pedido, ej: 2 elementos iguales si pidió doble).
