@@ -308,7 +308,12 @@ async function handleIncomingMessage({ chatId, text }) {
         return
       }
 
-      const shouldSendMenuForOrderStart = isFirstCustomerMessage && isOrderStartRequest(text)
+      // A quien escribe se le manda el formato, no un saludo generico. Antes esto pedia ademas
+      // que el primer mensaje pareciera un pedido, asi que un "Hola" suelto caia en la IA, que
+      // contestaba un saludo amable y nada mas - el cliente quedaba sin saber como pedir. Si el
+      // mensaje es una pregunta concreta de otra cosa (horarios, envio, ubicacion), eso se
+      // responde primero y el formato va despues, cuando de verdad quiera pedir.
+      const shouldSendMenuForOrderStart = isFirstCustomerMessage && !isSpecificNonOrderQuestion(text)
       if (isMenuRequest(text) || shouldSendMenuForOrderStart) {
         const caption = buildOrderTemplateMessage()
         conversations.add(chatId, 'bot', caption)
@@ -369,7 +374,7 @@ async function handleIncomingMessage({ chatId, text }) {
             await requestQrPaymentProof(chatId, orderInput, summary)
             return
           }
-          const reply = buildMissingFieldsReply(missingFields)
+          const reply = buildMissingFieldsReply(missingFields, { text, catalog, state })
           conversations.add(chatId, 'bot', reply)
           await whatsapp.sendText(chatId, reply)
           return
@@ -406,7 +411,7 @@ async function handleIncomingMessage({ chatId, text }) {
             await requestQrPaymentProof(chatId, orderInput, summary)
             return
           }
-          const reply = buildMissingFieldsReply(missingFields)
+          const reply = buildMissingFieldsReply(missingFields, { text, catalog, state })
           conversations.add(chatId, 'bot', reply)
           await whatsapp.sendText(chatId, reply)
           return
@@ -562,7 +567,7 @@ async function handleIncomingMessage({ chatId, text }) {
             await requestQrPaymentProof(chatId, orderInput, summary)
             return
           }
-          const reply = buildMissingFieldsReply(missingFields)
+          const reply = buildMissingFieldsReply(missingFields, { text, catalog, state })
           conversations.add(chatId, 'bot', reply)
           await whatsapp.sendText(chatId, reply)
           return
@@ -1477,9 +1482,30 @@ Recoger
 *NO LLAMAR*`
 }
 
-function buildMissingFieldsReply(missingFields) {
+// El formato ya se le mando en esta conversacion? El mensaje corto dice "como en el ejemplo", asi
+// que mandarlo sin haber mostrado el ejemplo deja al cliente preguntando "que ejemplo?" - paso de
+// verdad, y repetirle lo mismo lo dejaba en un callejon sin salida.
+function hasSeenOrderTemplate(state) {
+  return (state?.messages || []).some(
+    (entry) => entry.role === 'bot' && String(entry.text || '').includes('*Ejemplo:*'),
+  )
+}
+
+function buildMissingFieldsReply(missingFields, { text = '', catalog = null, state = null } = {}) {
   if (missingFields.length === 1 && missingFields[0] === 'tu ubicacion de WhatsApp') {
     return 'Ya tengo tu pedido casi listo. Por favor envíame tu *ubicación de WhatsApp* (o dirección exacta) para finalizar.'
+  }
+
+  if (missingFields.includes('tu pedido')) {
+    // Dijo "hamburguesas" sin decir cuales: preguntarle cuales, que es lo unico que destraba la
+    // conversacion. Repetirle el formato no le responde nada.
+    if (catalog && mentionsBurgersWithoutChoosing(text)) {
+      return buildBurgerChoicesReply(catalog)
+    }
+
+    if (state && !hasSeenOrderTemplate(state)) {
+      return buildOrderTemplateMessage()
+    }
   }
 
   return ORDER_FORMAT_REDIRECT_MESSAGE
@@ -1507,7 +1533,7 @@ function buildContextualRecoveryReply(state) {
   if (state.orderDraft?.items?.length) {
     const missingFields = getMissingOrderFields(state.orderDraft)
     if (missingFields.length > 0) {
-      return buildMissingFieldsReply(missingFields)
+      return buildMissingFieldsReply(missingFields, { state })
     }
 
     return 'Ya tengo tu pedido avanzado. Si esta correcto, respondeme "Si"; si quieres cambiar algo, dime que modificamos.'
@@ -1536,7 +1562,7 @@ async function tryRecoverOrderFromText(chatId, text, state) {
         await requestQrPaymentProof(chatId, orderInput, summary)
         return { handled: true, reply: '' }
       }
-      return { handled: true, reply: buildMissingFieldsReply(missingFields) }
+      return { handled: true, reply: buildMissingFieldsReply(missingFields, { text, catalog, state }) }
     }
 
     const orderInput = buildOrderInput({ result: fallbackResult, chatId })
@@ -1690,6 +1716,44 @@ function isPayOnArrivalText(text) {
     /\b(pagare|pagaria|pago|pagar|cancelo|cancelare|abono|abonare)\b/.test(normalized) &&
     /\b(ahi|ahi mismo|alli|alla|en el local|en el restaurante|al recoger|al retirar|cuando recoja|cuando llegue|cuando llegues|al llegar|al recibir|en persona|al delivery|al repartidor|con el delivery|contra entrega|en la entrega)\b/.test(normalized)
   )
+}
+
+// Pregunta concreta sobre otra cosa que no es hacer un pedido (horarios, envio, ubicacion, como
+// pagar). Solo en ese caso se responde eso en vez de mandar el formato. Un saludo suelto o un
+// "quiero 2 hamburguesas" NO entran aca: esos van derecho al formato.
+function isSpecificNonOrderQuestion(text) {
+  const normalized = normalizeText(text)
+  if (isOrderStartRequest(text) || looksLikeConcreteOrderText(text) || looksLikeStructuredOrderMessage(text)) {
+    return false
+  }
+  return (
+    isDeliveryPricingRequest(text) ||
+    isPaymentQrRequest(text) ||
+    isRestaurantLocationRequest(text) ||
+    /\b(horario|horarios|abren|abierto|cierran|cerrado|a que hora|hasta que hora|donde estan|donde queda|ubicacion|direccion|telefono|reclamo|factura)\b/.test(normalized)
+  )
+}
+
+// El cliente nombro hamburguesas pero sin decir cuales ("quiero 2 hamburguesas"). No alcanza
+// para armar el pedido: hay que preguntarle cuales quiere, con las opciones a la vista.
+function mentionsBurgersWithoutChoosing(text) {
+  const normalized = normalizeText(text)
+  return /\b(hamburguesa|hamburguesas|burger|burgers|burguer|burguers|burguesa|burguesas)\b/.test(normalized)
+}
+
+function buildBurgerChoicesReply(catalog) {
+  const burgers = (catalog?.products || [])
+    .filter((product) => product.categoryId === 'hamburguesas')
+    .map((product) => `- ${product.name}: Bs ${product.price}`)
+
+  if (!burgers.length) return ORDER_FORMAT_REDIRECT_MESSAGE
+
+  return [
+    '¿Cuáles hamburguesas quieres? Estas son las opciones:',
+    ...burgers,
+    '',
+    'Dime cuántas de cada una (y si quieres algo sin cebolla o con extras) y te armo el pedido.',
+  ].join('\n')
 }
 
 function isDeliveryPricingRequest(text) {
