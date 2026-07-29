@@ -366,9 +366,11 @@ async function handleIncomingMessage({ chatId, text }) {
       const previousItems = state.orderDraft?.items || pendingOrderToDraft(state.pendingOrder)?.items || []
       const result = {
         ...aiResult,
-        items: enforceTripleRule(
-          enforcePapasRule(previousItems, enforceCatalogItems(aiResult.items, catalog), text, catalog),
-          catalog,
+        items: fixExtrasCountedTwice(
+          enforceTripleRule(
+            enforcePapasRule(previousItems, enforceCatalogItems(aiResult.items, catalog), text, catalog),
+            catalog,
+          ),
         ),
       }
 
@@ -1359,6 +1361,31 @@ function enforceTripleRule(items, catalog) {
   })
 }
 
+// Si el adicional va uno por unidad, en la lista tiene que figurar UNA sola vez: el precio ya se
+// multiplica por la cantidad del item. La IA a veces lo repite tantas veces como unidades hay y
+// ahi se cobra al cuadrado - a un cliente que pidio "3 BBQ LAB con extra piña" le salian 9 piñas.
+// Solo se corrige cuando la repeticion coincide EXACTO con la cantidad, que es la firma de ese
+// error; un pedido legitimo como "2 hamburguesas con 2 piñas cada una" no se toca.
+function fixExtrasCountedTwice(items) {
+  return (items || []).map((item) => {
+    const quantity = Number(item.quantity) || 1
+    if (!item.extrasForEachUnit || quantity < 2 || !(item.extras || []).length) return item
+
+    const porExtra = new Map()
+    for (const extra of item.extras) {
+      const clave = extra.id || extra.name
+      porExtra.set(clave, [...(porExtra.get(clave) || []), extra])
+    }
+
+    const extras = []
+    for (const repetidos of porExtra.values()) {
+      extras.push(...(repetidos.length === quantity ? [repetidos[0]] : repetidos))
+    }
+
+    return { ...item, extras }
+  })
+}
+
 function getMissingOrderFields(result) {
   const missing = []
   if (!result.customerName) missing.push('tu nombre')
@@ -1511,11 +1538,18 @@ function pendingOrderToDraft(pendingOrder) {
 // unidad con los extras y el resto sin ellos: la cuenta da bien y la cocina ve cual lleva que.
 // Si el cliente dijo "cada una", entonces si van en todas y no se separa nada.
 function distributeExtrasOverUnits(items, extrasPerUnit) {
-  if (extrasPerUnit) return items
-
   const result = []
   for (const item of items || []) {
     const quantity = Number(item.quantity) || 1
+    // Que el adicional sea uno por cada unidad o uno en total depende de como lo escribio el
+    // cliente, no de una regla fija: "3 BBQ LAB con extra piña" son tres piñas, una por
+    // hamburguesa, pero "2 BBQ LAB simple" con "1 tocino extra" en otro renglon es un solo
+    // tocino. Eso lo decide la IA por item (extrasForEachUnit); antes lo decidia este codigo
+    // siempre igual y a un cliente le puso las 3 piñas en una sola hamburguesa.
+    if (extrasPerUnit || item.extrasForEachUnit) {
+      result.push(item)
+      continue
+    }
     if (quantity > 1 && (item.extras || []).length) {
       result.push({ ...item, quantity: 1 })
       result.push({ ...item, quantity: quantity - 1, extras: [] })

@@ -40,6 +40,9 @@ const orderSchema = z.object({
         // dijo el cliente, no sobre el producto elegido: se probo con un campo "tamaño" y el
         // modelo respondia "doble", que es el producto que termina usando una triple.
         customerAskedTriple: z.boolean().default(false),
+        // true = los adicionales de este item van uno POR CADA unidad; false = son el total.
+        // Depende de como lo escribio el cliente, no de una regla fija, asi que lo decide la IA.
+        extrasForEachUnit: z.boolean().default(false),
         options: z.array(z.string()).default([]),
         extras: z.array(z.object({ id: z.string(), name: z.string(), price: numberOrDefault(0) })).default([]),
       }),
@@ -250,6 +253,12 @@ Objetivo:
 - SÍ hacemos delivery con motos propias. Si preguntan "¿tienen delivery?", "¿tiene motito?", "¿me lo pueden traer?" o "¿mando a recoger?", respondé claramente que sí, que tenemos motos para enviárselo, y que si prefiere también puede pasar a recoger por el local. Aclarale que el costo del envío se cotiza aparte y lo paga directamente al delivery.
 - Cuando el cliente pregunta algo, en "reply" respondé SOLO esa pregunta, en una o dos frases. NO le pidas los datos que falten ni repitas el formato del pedido: de eso se encarga el sistema aparte, y si vos también lo pedís el cliente recibe lo mismo dos veces en el mismo mensaje.
 - PAGOS. Si el pedido es DELIVERY: nunca se cobra por el chat ni se envía QR. El cliente paga el total directamente a la moto al recibir (efectivo o QR) y el envío se cotiza aparte, también con el delivery. Si pide pagar por QR, explicale eso mismo. Si es RECOJO: no menciones el método de pago hasta que confirme el pedido; recién ahí se le pregunta si paga con QR ahora o directo en el restaurante.
+- "extrasForEachUnit" define si el adicional va uno POR CADA unidad (true) o si los de la lista son el TOTAL (false). La señal decisiva es si el cliente le puso un NÚMERO PROPIO al adicional:
+  · Adicional SIN número propio -> uno por cada unidad, true. Ej. "3 BBQ LAB con extra piña" -> quantity 3, extras [Piña] (UNA sola vez), true: cada hamburguesa lleva su piña.
+  · Adicional CON número propio -> ese número es el TOTAL del pedido, false. Ej. el cliente escribe "2 BBQ LAB simple" y en otro renglón "1 tocino extra" -> quantity 2, extras [Tocino], false: es UN tocino en total, no uno por hamburguesa. Ej. "1 bbq lab con 3 extra piña" -> quantity 1, extras [Piña, Piña, Piña], false.
+  · "cada una", "a cada una", "las dos con..." -> siempre true.
+  · CUIDADO: cuando es true, el adicional va UNA SOLA VEZ en la lista "extras"; el sistema ya lo aplica a cada unidad. Si lo repetís tantas veces como unidades hay, se cobra al cuadrado (3 hamburguesas x 3 piñas = 9 piñas).
+- Si el cliente no dice el tamaño de la hamburguesa (no escribe "doble" ni "triple"), es SIMPLE. Ej. "3 BBQ LAB con extra piña" son 3 "BBQ Simple Con Papas", no dobles.
 - IMPORTANTE - la cantidad de un extra NO se multiplica por la cantidad del item salvo que el cliente lo pida explícitamente. Ej. "2 BBQ con extra tocino" son 2 hamburguesas que cada una lleva 1 tocino (agrega el extra "Tocino" UNA sola vez en la lista de extras de ese item - el sistema ya multiplica el precio del extra por la cantidad del item automáticamente). Solo agregues el extra 2 veces si el cliente dijo "doble tocino"/"2 tocino" explícitamente para el extra en sí.
 - Si el cliente pide QUITAR, sacar, eliminar o cancelar un item específico de un pedido que ya se venía armando (ver "Pedido que ya se venia armando" mas abajo si existe), devuelve la lista completa de items SIN ese item (no lo incluyas), manteniendo los demás items intactos. No dejes items vacío a menos que el cliente haya quitado todo.
 - IMPORTANTE - un mensaje puede describir VARIOS items distintos a la vez (ej. "una BBQ con doble tocino y una Burger Lab sin cebolla"): identifica cada hamburguesa/producto por separado como un item independiente en la lista "items", y asegurate de que cada extra, nota o modificador quede asociado SOLO al item al que el cliente se refería, no a todos los items del pedido.
@@ -302,6 +311,7 @@ Devuelve SOLO JSON con esta forma:
       "quantity": 1,
       "note": "",
       "customerAskedTriple": false,
+      "extrasForEachUnit": false,
       "options": [],
       "extras": []
     }
