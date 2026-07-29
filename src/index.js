@@ -172,6 +172,25 @@ async function handleIncomingMessage({ chatId, text }) {
         }
       }
 
+      // Respuesta a "¿con papas o sin papas?". Se resuelve aca y no en el flujo normal: si no,
+      // "una con papas" se toma como un pedido nuevo de papas en vez de como la respuesta a la
+      // pregunta que el bot acaba de hacer.
+      if (
+        state.pendingClarification === 'papas' &&
+        state.orderDraft?.items?.length &&
+        /\b(con|sin)\s+papas?\b/.test(normalizeText(text))
+      ) {
+        const papasCatalog = await getCatalogForParsing()
+        const updatedDraft = {
+          ...state.orderDraft,
+          items: applyPapasAnswer(state.orderDraft.items, papasCatalog, text),
+        }
+        state.pendingClarification = null
+        conversations.setOrderDraft(chatId, updatedDraft)
+        await finalizeOrderDraft({ chatId, state, draft: updatedDraft, catalog: papasCatalog, text })
+        return
+      }
+
       if (isPaymentProofMessage(text)) {
         if (state.pendingOrder) {
           const orderInput = {
@@ -366,67 +385,14 @@ async function handleIncomingMessage({ chatId, text }) {
         const deterministicResult = quickResult.items.length ? quickResult : buildEmptyAiResult()
         const mergedResult = mergeOrderDraft(baseDraft, deterministicResult, text)
         conversations.setOrderDraft(chatId, mergedResult)
-        const missingFields = getMissingOrderFields(mergedResult)
-        if (missingFields.length > 0) {
-          if (shouldProceedWithQrWhileWaitingLocation(mergedResult, missingFields)) {
-            const orderInput = buildOrderInput({ result: mergedResult, chatId })
-            const summary = buildOrderSummary(orderInput)
-            await requestQrPaymentProof(chatId, orderInput, summary)
-            return
-          }
-          const reply = buildMissingFieldsReply(missingFields, { text, catalog, state })
-          conversations.add(chatId, 'bot', reply)
-          await whatsapp.sendText(chatId, reply)
-          return
-        }
-
-        const orderInput = buildOrderInput({ result: mergedResult, chatId })
-        if (orderInput.fulfillmentType === 'delivery' && orderInput.deliveryQuoteStatus === 'missing_location') {
-          const reply = 'Perfecto, ya tengo tu pedido. Para cotizar el envio necesito que me mandes tu ubicacion de WhatsApp, por favor.'
-          conversations.add(chatId, 'bot', reply)
-          await whatsapp.sendText(chatId, reply)
-          return
-        }
-
-        const summary = buildOrderSummary(orderInput)
-        if (shouldRequestQrPaymentProof(orderInput)) {
-          await requestQrPaymentProof(chatId, orderInput, summary)
-          return
-        }
-        conversations.setPendingOrder(chatId, orderInput, summary)
-        const reply = `${summary}\n\nConfirmas el pedido?`
-        conversations.add(chatId, 'bot', reply)
-        await whatsapp.sendText(chatId, reply)
+        await finalizeOrderDraft({ chatId, state, draft: mergedResult, catalog, text })
         return
       }
 
       if (isSimpleForQuickPath && state.orderDraft?.items?.length && hasUsefulInferredFields(text)) {
         const mergedResult = mergeOrderDraft(state.orderDraft, buildEmptyAiResult(), text)
         conversations.setOrderDraft(chatId, mergedResult)
-        const missingFields = getMissingOrderFields(mergedResult)
-        if (missingFields.length > 0) {
-          if (shouldProceedWithQrWhileWaitingLocation(mergedResult, missingFields)) {
-            const orderInput = buildOrderInput({ result: mergedResult, chatId })
-            const summary = buildOrderSummary(orderInput)
-            await requestQrPaymentProof(chatId, orderInput, summary)
-            return
-          }
-          const reply = buildMissingFieldsReply(missingFields, { text, catalog, state })
-          conversations.add(chatId, 'bot', reply)
-          await whatsapp.sendText(chatId, reply)
-          return
-        }
-
-        const orderInput = buildOrderInput({ result: mergedResult, chatId })
-        const summary = buildOrderSummary(orderInput)
-        if (shouldRequestQrPaymentProof(orderInput)) {
-          await requestQrPaymentProof(chatId, orderInput, summary)
-          return
-        }
-        conversations.setPendingOrder(chatId, orderInput, summary)
-        const reply = `${summary}\n\nConfirmas el pedido?`
-        conversations.add(chatId, 'bot', reply)
-        await whatsapp.sendText(chatId, reply)
+        await finalizeOrderDraft({ chatId, state, draft: mergedResult, catalog, text })
         return
       }
 
@@ -559,31 +525,7 @@ async function handleIncomingMessage({ chatId, text }) {
 
       if (hasOrderSignal) {
         conversations.setOrderDraft(chatId, mergedResult)
-        const missingFields = getMissingOrderFields(mergedResult)
-        if (missingFields.length > 0) {
-          if (shouldProceedWithQrWhileWaitingLocation(mergedResult, missingFields)) {
-            const orderInput = buildOrderInput({ result: mergedResult, chatId })
-            const summary = buildOrderSummary(orderInput)
-            await requestQrPaymentProof(chatId, orderInput, summary)
-            return
-          }
-          const reply = buildMissingFieldsReply(missingFields, { text, catalog, state })
-          conversations.add(chatId, 'bot', reply)
-          await whatsapp.sendText(chatId, reply)
-          return
-        }
-
-        const orderInput = buildOrderInput({ result: mergedResult, chatId })
-        const summary = buildOrderSummary(orderInput)
-        if (shouldRequestQrPaymentProof(orderInput)) {
-          await requestQrPaymentProof(chatId, orderInput, summary)
-          return
-        }
-        conversations.setPendingOrder(chatId, orderInput, summary)
-        const reply = `${summary}\n\nConfirmas el pedido?`
-
-        conversations.add(chatId, 'bot', reply)
-        await whatsapp.sendText(chatId, reply)
+        await finalizeOrderDraft({ chatId, state, draft: mergedResult, catalog, text })
         return
       }
 
@@ -861,6 +803,54 @@ async function requestQrPaymentProof(chatId, orderInput, summary) {
   await whatsapp.sendImage(chatId, paymentQrImagePath, caption)
 }
 
+// Ultimo tramo comun a los dos caminos (el deterministico y el de la IA): faltantes, aclaracion
+// de papas y resumen. Estaba duplicado y era cuestion de tiempo que los dos caminos se
+// desincronizaran y uno preguntara cosas que el otro no.
+async function finalizeOrderDraft({ chatId, state, draft, catalog, text }) {
+  const missingFields = getMissingOrderFields(draft)
+  if (missingFields.length > 0) {
+    if (shouldProceedWithQrWhileWaitingLocation(draft, missingFields)) {
+      const orderInput = buildOrderInput({ result: draft, chatId })
+      await requestQrPaymentProof(chatId, orderInput, buildOrderSummary(orderInput))
+      return
+    }
+    const reply = buildMissingFieldsReply(missingFields, { text, catalog, state })
+    conversations.add(chatId, 'bot', reply)
+    await whatsapp.sendText(chatId, reply)
+    return
+  }
+
+  // Con papas o sin papas cambia el precio, asi que no se asume: se pregunta justo antes del
+  // resumen, cuando ya estan el resto de los datos.
+  if (needsPapasClarification(draft.items, catalog, state)) {
+    state.pendingClarification = 'papas'
+    conversations.scheduleSave()
+    const reply = buildPapasQuestion(draft.items, catalog)
+    conversations.add(chatId, 'bot', reply)
+    await whatsapp.sendText(chatId, reply)
+    return
+  }
+
+  const orderInput = buildOrderInput({ result: draft, chatId })
+  if (orderInput.fulfillmentType === 'delivery' && orderInput.deliveryQuoteStatus === 'missing_location') {
+    const reply = 'Perfecto, ya tengo tu pedido. Para cotizar el envio necesito que me mandes tu ubicacion de WhatsApp, por favor.'
+    conversations.add(chatId, 'bot', reply)
+    await whatsapp.sendText(chatId, reply)
+    return
+  }
+
+  const summary = buildOrderSummary(orderInput)
+  if (shouldRequestQrPaymentProof(orderInput)) {
+    await requestQrPaymentProof(chatId, orderInput, summary)
+    return
+  }
+
+  conversations.setPendingOrder(chatId, orderInput, summary)
+  const reply = `${summary}\n\nConfirmas el pedido?`
+  conversations.add(chatId, 'bot', reply)
+  await whatsapp.sendText(chatId, reply)
+}
+
 async function createWhatsappOrderWithRetry(orderInput) {
   // BOT_TEST_MODE nunca debe escribir un pedido real en Firestore - el chat de prueba local
   // ya escribio pedidos reales por error una vez porque esta funcion no tenia este freno.
@@ -1133,6 +1123,7 @@ function mergeOrderDraft(previous, result, text, { itemsAreComplete = false } = 
     customerPhone: result.customerPhone || inferred.customerPhone || previous?.customerPhone || '',
     paymentMethod: result.paymentMethod || inferred.paymentMethod || previous?.paymentMethod || null,
     paymentOnArrival: Boolean(inferred.paymentOnArrival || previous?.paymentOnArrival),
+    extrasPerUnit: Boolean(inferred.extrasPerUnit || previous?.extrasPerUnit),
     fulfillmentType: result.fulfillmentType || inferred.fulfillmentType || previous?.fulfillmentType || null,
     deliveryAddress: result.deliveryAddress || inferred.deliveryAddress || previous?.deliveryAddress || '',
   }
@@ -1200,6 +1191,12 @@ function inferFieldsFromText(text) {
   return {
     paymentMethod,
     paymentOnArrival: isPayOnArrivalText(text),
+    // "2 bbq con tocino cada una" = un tocino por hamburguesa. Sin esta señal explicita, un extra
+    // pedido junto a varias hamburguesas se entiende como uno solo en total.
+    // Solo formas con "cada", que no son ambiguas. Se probo con "las dos con"/"ambas con" y hay
+    // que dejarlas fuera: la respuesta "las dos con papas" las activaba y volvia a cobrar el
+    // extra dos veces. Ante la duda conviene el falso negativo, que nunca cobra de mas.
+    extrasPerUnit: /\b(cada una|cada uno|en cada|a cada|para cada)\b/.test(normalized),
     fulfillmentType,
     deliveryAddress,
     // introducedName ("me llamo X"/"soy X") es una senal fuerte y explicita - puede corregir un
@@ -1434,6 +1431,110 @@ function inferExtraQuantity(normalizedText, normalizedExtraName) {
   return 1
 }
 
+// --- Papas: nunca asumir, porque cambia el precio (BBQ Simple: Bs 23 con papas, Bs 20 sin) ---
+
+const SPANISH_NUMBER_WORDS = { un: 1, una: 1, uno: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5, seis: 6 }
+
+// Los ids del catalogo siguen el patron "...-con-papas" / "...-sin-papas", asi que la otra
+// version del mismo producto se encuentra cambiando esa parte del id.
+function getPapasSibling(catalog, productId) {
+  if (!productId) return null
+  if (productId.includes('-con-papas')) return findCatalogProduct(catalog, productId.replace('-con-papas', '-sin-papas'))
+  if (productId.includes('-sin-papas')) return findCatalogProduct(catalog, productId.replace('-sin-papas', '-con-papas'))
+  return null
+}
+
+function customerSpecifiedPapas(state) {
+  return (state?.messages || []).some(
+    (entry) => entry.role === 'cliente' && /\b(con|sin)\s+papas?\b/.test(normalizeText(entry.text)),
+  )
+}
+
+function needsPapasClarification(items, catalog, state) {
+  if (customerSpecifiedPapas(state)) return false
+  return (items || []).some((item) => getPapasSibling(catalog, item.productId))
+}
+
+function buildPapasQuestion(items, catalog) {
+  const ambiguous = (items || []).filter((item) => getPapasSibling(catalog, item.productId))
+  const total = ambiguous.reduce((sum, item) => sum + (Number(item.quantity) || 1), 0)
+  if (total > 1) {
+    return `¿Las ${total} hamburguesas las quieres *con papas* o *sin papas*? Si quieres unas de cada una, dime cuántas (por ejemplo: "una con papas").`
+  }
+  return '¿La hamburguesa la quieres *con papas* o *sin papas*?'
+}
+
+// Interpreta la respuesta contando cuantas van de cada tipo. El dueño lo pidio explicito: si
+// pidio dos y contesta "una con papas", la otra queda sin papas.
+function parsePapasAnswer(text, totalUnits) {
+  const normalized = normalizeText(text)
+  const regex = /(\d+|un|una|uno|dos|tres|cuatro|cinco|seis|todas|todos|ambas|ambos|ninguna|ninguno)?\s*(con|sin)\s+papas?/g
+  const counts = { con: null, sin: null }
+  let found = false
+  let match
+
+  while ((match = regex.exec(normalized)) !== null) {
+    found = true
+    const rawCount = match[1]
+    const choice = match[2]
+    if (!rawCount || /^(todas|todos|ambas|ambos)$/.test(rawCount)) {
+      counts[choice] = totalUnits
+    } else if (/^(ninguna|ninguno)$/.test(rawCount)) {
+      counts[choice] = 0
+    } else if (/^\d+$/.test(rawCount)) {
+      counts[choice] = Number(rawCount)
+    } else {
+      counts[choice] = SPANISH_NUMBER_WORDS[rawCount] ?? totalUnits
+    }
+  }
+
+  if (!found) return null
+
+  // Lo que no se menciono es el resto: "una con papas" de dos hamburguesas deja una sin papas.
+  if (counts.con === null) counts.con = Math.max(0, totalUnits - (counts.sin ?? 0))
+  if (counts.sin === null) counts.sin = Math.max(0, totalUnits - counts.con)
+
+  return { con: Math.min(counts.con, totalUnits), sin: Math.min(counts.sin, totalUnits) }
+}
+
+// Reparte las unidades ambiguas entre la version con papas y la sin papas, y las reagrupa en
+// lineas. Los dos productos tienen ids distintos, asi que quedan como dos lineas separadas y la
+// cocina ve exactamente cuantas van de cada una.
+function applyPapasAnswer(items, catalog, answerText) {
+  const ambiguous = (items || []).filter((item) => getPapasSibling(catalog, item.productId))
+  if (!ambiguous.length) return items
+
+  const totalUnits = ambiguous.reduce((sum, item) => sum + (Number(item.quantity) || 1), 0)
+  const plan = parsePapasAnswer(answerText, totalUnits)
+  if (!plan) return items
+
+  let remainingCon = plan.con
+  const result = []
+
+  for (const item of items || []) {
+    if (!getPapasSibling(catalog, item.productId)) {
+      result.push(item)
+      continue
+    }
+
+    const quantity = Number(item.quantity) || 1
+    const conUnits = Math.max(0, Math.min(remainingCon, quantity))
+    const sinUnits = quantity - conUnits
+    remainingCon -= conUnits
+
+    const conProduct = item.productId.includes('-con-papas') ? null : getPapasSibling(catalog, item.productId)
+    const sinProduct = item.productId.includes('-sin-papas') ? null : getPapasSibling(catalog, item.productId)
+    const asCon = conProduct ? { productId: conProduct.id, name: conProduct.name, basePrice: Number(conProduct.price || 0) } : {}
+    const asSin = sinProduct ? { productId: sinProduct.id, name: sinProduct.name, basePrice: Number(sinProduct.price || 0) } : {}
+
+    // Los extras quedan en la linea con papas si existe; si no, en la otra. Asi no se duplican.
+    if (conUnits > 0) result.push({ ...item, ...asCon, quantity: conUnits })
+    if (sinUnits > 0) result.push({ ...item, ...asSin, quantity: sinUnits, extras: conUnits > 0 ? [] : item.extras })
+  }
+
+  return result
+}
+
 function getMissingOrderFields(result) {
   const missing = []
   if (!result.customerName) missing.push('tu nombre')
@@ -1558,26 +1659,10 @@ async function tryRecoverOrderFromText(chatId, text, state) {
     if (!fallbackResult.items.length) return { handled: false, reply: '' }
 
     conversations.setOrderDraft(chatId, fallbackResult)
-    const missingFields = getMissingOrderFields(fallbackResult)
-    if (missingFields.length > 0) {
-      if (shouldProceedWithQrWhileWaitingLocation(fallbackResult, missingFields)) {
-        const orderInput = buildOrderInput({ result: fallbackResult, chatId })
-        const summary = buildOrderSummary(orderInput)
-        await requestQrPaymentProof(chatId, orderInput, summary)
-        return { handled: true, reply: '' }
-      }
-      return { handled: true, reply: buildMissingFieldsReply(missingFields, { text, catalog, state }) }
-    }
-
-    const orderInput = buildOrderInput({ result: fallbackResult, chatId })
-    const summary = buildOrderSummary(orderInput)
-    if (shouldRequestQrPaymentProof(orderInput)) {
-      await requestQrPaymentProof(chatId, orderInput, summary)
-      return { handled: true, reply: '' }
-    }
-
-    conversations.setPendingOrder(chatId, orderInput, summary)
-    return { handled: true, reply: `${summary}\n\nConfirmas el pedido?` }
+    // Mismo cierre que el flujo normal, para que este camino de recuperacion no se saltee la
+    // pregunta de las papas y termine asumiendo la opcion mas cara.
+    await finalizeOrderDraft({ chatId, state, draft: fallbackResult, catalog, text })
+    return { handled: true, reply: '' }
   } catch (fallbackError) {
     console.error('No se pudo recuperar pedido localmente:', fallbackError)
     return { handled: false, reply: '' }
@@ -1613,8 +1698,29 @@ function pendingOrderToDraft(pendingOrder) {
   }
 }
 
+// El cliente pidio "2 BBQ LAB" y "1 tocino extra": pidio UN tocino, no uno por hamburguesa. El
+// precio de cada linea se calcula como (base + extras) x cantidad, asi que dejar ese extra en una
+// linea de 2 unidades lo cobraba dos veces (a un cliente real le sumo Bs 6 de mas). Separamos una
+// unidad con los extras y el resto sin ellos: la cuenta da bien y la cocina ve cual lleva que.
+// Si el cliente dijo "cada una", entonces si van en todas y no se separa nada.
+function distributeExtrasOverUnits(items, extrasPerUnit) {
+  if (extrasPerUnit) return items
+
+  const result = []
+  for (const item of items || []) {
+    const quantity = Number(item.quantity) || 1
+    if (quantity > 1 && (item.extras || []).length) {
+      result.push({ ...item, quantity: 1 })
+      result.push({ ...item, quantity: quantity - 1, extras: [] })
+    } else {
+      result.push(item)
+    }
+  }
+  return result
+}
+
 function buildOrderInput({ result, chatId }) {
-  const items = result.items.map((item) => {
+  const items = distributeExtrasOverUnits(result.items, result.extrasPerUnit).map((item) => {
     const extrasTotal = item.extras.reduce((sum, extra) => sum + Number(extra.price || 0), 0)
     const lineTotal = (Number(item.basePrice || 0) + extrasTotal) * item.quantity
     return {

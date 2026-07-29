@@ -46,6 +46,7 @@ export class ConversationStore {
     const state = this.get(chatId)
     state.messages = []
     state.pendingOrder = null
+    state.pendingClarification = null
     state.awaitingPaymentProof = null
     state.orderDraft = null
     // lastOrderId tambien se olvida: sin esto, un cliente que vuelve despues de un rato (o pide
@@ -59,6 +60,7 @@ export class ConversationStore {
     const state = this.get(chatId)
     state.lastOrderId = orderId
     state.pendingOrder = null
+    state.pendingClarification = null
     state.awaitingPaymentProof = null
     state.orderDraft = null
     this.scheduleSave()
@@ -67,6 +69,7 @@ export class ConversationStore {
   setPendingOrder(chatId, orderInput, summary) {
     const state = this.get(chatId)
     state.pendingOrder = { orderInput, summary }
+    state.pendingClarification = null
     state.awaitingPaymentProof = null
     state.orderDraft = null
     this.scheduleSave()
@@ -111,6 +114,10 @@ function normalizeState(value) {
     pendingOrder: value?.pendingOrder || null,
     awaitingPaymentProof: value?.awaitingPaymentProof || null,
     orderDraft: value?.orderDraft || null,
+    // Aclaracion que el bot esta esperando ahora mismo (ej. 'papas'). Sin esto, la respuesta
+    // "una con papas" se procesa como si fuera un pedido nuevo en vez de la respuesta a la
+    // pregunta que acabamos de hacer.
+    pendingClarification: value?.pendingClarification || null,
     lastMessageAt: Number(value?.lastMessageAt) || 0,
   }
 }
