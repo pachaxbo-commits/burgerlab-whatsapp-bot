@@ -1179,7 +1179,7 @@ function inferFieldsFromText(text) {
     // (corto, sin productos del menu) - antes cualquier mensaje que mencionara "delivery" en
     // cualquier parte (incluido el pedido completo con nombre/celular/items) se guardaba entero
     // como direccion, dejando el campo real de ubicacion siempre "lleno" con basura.
-    const looksLikeOrderNotAddress = /\b(burger|hamburguesa|bbq|barbacoa|papas|tocino|pina|gaseosa|coca|fanta|sprite|agua|mocochinchi|jamaica|tamarindo|refresco|helado)\b/i.test(normalized)
+    const looksLikeOrderNotAddress = looksLikeConcreteOrderText(normalized)
     if (rawText.length >= 5 && rawText.length <= 140 && !looksLikeOrderNotAddress && !isConfirmText(text) && !isCancelText(text) && !paymentMethod) {
       deliveryAddress = rawText
     }
@@ -1241,7 +1241,7 @@ function buildEmptyAiResult() {
 
 function isSimpleEnoughForQuickPath(normalizedText) {
   if (/\btriple\b/.test(normalizedText)) return false
-  const burgerFamilyMentions = (normalizedText.match(/\b(burger lab|burguer lab|burger|hamburguesa|bbq|barbacoa)\b/g) || []).length
+  const burgerFamilyMentions = (normalizedText.match(new RegExp(`\\b(?:${BURGER_FAMILY_SOURCE}|bbq|barbacoa)\\b`, 'g')) || []).length
   if (burgerFamilyMentions > 1) return false
   if (/\by\s+(otra|otro|una|un|1|2|3)\b/.test(normalizedText)) return false
   // El parser rapido solo sabe AGREGAR productos por palabra clave - no entiende negaciones.
@@ -1315,13 +1315,13 @@ function inferFlexibleMenuItems(normalizedText, catalog) {
   if (/\b(bbq|barbacoa)\b/.test(normalizedText)) {
     const size = isBurgerSizeDoble ? 'doble' : 'simple'
     const papas = /\bsin\s+papas?\b/.test(normalizedText) ? 'sin-papas' : 'con-papas'
-    addProduct(`bbq-${size}-${papas}`, inferQuantityBeforeProduct(normalizedText, 'bbq'))
+    addProduct(`bbq-${size}-${papas}`, inferQuantityBeforeProduct(normalizedText, /\b(?:bbq|barbacoa)\b/))
   }
 
-  if (/\b(burger lab|burguer lab|burger|hamburguesa)\b/.test(normalizedText) && !/\b(bbq|barbacoa)\b/.test(normalizedText)) {
+  if (burgerFamilyRegex().test(normalizedText) && !/\b(bbq|barbacoa)\b/.test(normalizedText)) {
     const size = isBurgerSizeDoble ? 'doble' : 'simple'
     const papas = /\bsin\s+papas?\b/.test(normalizedText) ? 'sin-papas' : 'con-papas'
-    addProduct(`burger-lab-${size}-${papas}`, inferQuantityBeforeProduct(normalizedText, 'burger'))
+    addProduct(`burger-lab-${size}-${papas}`, inferQuantityBeforeProduct(normalizedText, burgerFamilyRegex()))
   }
 
   if (/\bcoca\b/.test(normalizedText)) {
@@ -1356,8 +1356,12 @@ function findCatalogProduct(catalog, productId) {
   return (catalog.products || []).find((product) => product.id === productId && product.isVisible !== false && product.isActive !== false)
 }
 
-function inferQuantityBeforeProduct(normalizedText, normalizedProductName) {
-  const index = normalizedText.indexOf(normalizedProductName)
+function inferQuantityBeforeProduct(normalizedText, productNeedle) {
+  // El "needle" puede ser texto o expresion regular. Con texto fijo, un producto que se escribe
+  // de varias formas (burger/burguer/hamburguesa) no se encontraba, y como "no encontrado" y
+  // "sin cantidad delante" daban el mismo resultado, la cantidad se perdia en silencio.
+  const index =
+    typeof productNeedle === 'string' ? normalizedText.indexOf(productNeedle) : normalizedText.search(productNeedle)
   const before = index > 0 ? normalizedText.slice(Math.max(0, index - 30), index) : ''
   const digitMatch = before.match(/\b([2-9])\s*(x|de|porcion|porciones|orden|ordenes|paquete|paquetes)?\s*(de)?\s*$/i)
   if (digitMatch) return Number(digitMatch[1])
@@ -1679,9 +1683,23 @@ function looksLikeStructuredOrderMessage(text) {
   return providedCount >= 2
 }
 
+// Unica fuente de verdad para reconocer la familia "burger lab". La gente la escribe de muchas
+// formas (burguer, burguerlab, hamburguesa, burguesa) y tener la lista copiada a mano en cada
+// funcion fue justo lo que rompio el pedido "Dos burguer lab con papas": la deteccion aceptaba
+// "burguer", pero la cuenta de cantidad buscaba el texto literal "burger", no lo encontraba y
+// caia al valor por defecto de 1. Cualquier variante nueva se agrega solo aca.
+const BURGER_FAMILY_SOURCE = '(?:burguer\\s*lab|burger\\s*lab|hamburguesas?|burguesas?|burguers?|burgers?)'
+
+function burgerFamilyRegex(flags = '') {
+  return new RegExp(`\\b${BURGER_FAMILY_SOURCE}\\b`, flags)
+}
+
 function isOrderStartRequest(text) {
   const normalized = normalizeText(text)
-  return /\b(quiero|quisiera|pedido|pedir|ordenar|hamburguesa|hamburguesas|burger|bbq|barbacoa|simple|doble|triple|papas|gaseosa|mocochinchi|agua|refresco)\b/.test(normalized)
+  return (
+    burgerFamilyRegex().test(normalized) ||
+    /\b(quiero|quisiera|pedido|pedir|ordenar|bbq|barbacoa|simple|doble|triple|papas|gaseosa|mocochinchi|agua|refresco)\b/.test(normalized)
+  )
 }
 
 function looksLikeOrderModificationRequest(text) {
@@ -1691,7 +1709,10 @@ function looksLikeOrderModificationRequest(text) {
 
 function looksLikeConcreteOrderText(text) {
   const normalized = normalizeText(text)
-  return /\b(burger|hamburguesa|hamburguesas|bbq|barbacoa|simple|doble|triple|papas|tocino|pina|gaseosa|coca|fanta|sprite|agua|mocochinchi|jamaica|tamarindo|refresco|helado)\b/.test(normalized)
+  return (
+    burgerFamilyRegex().test(normalized) ||
+    /\b(bbq|barbacoa|simple|doble|triple|papas|tocino|pina|gaseosa|coca|fanta|sprite|agua|mocochinchi|jamaica|tamarindo|refresco|helado)\b/.test(normalized)
+  )
 }
 
 // Solo un mensaje que nombra productos o pide explicitamente un cambio puede modificar los
@@ -1737,8 +1758,7 @@ function isSpecificNonOrderQuestion(text) {
 // El cliente nombro hamburguesas pero sin decir cuales ("quiero 2 hamburguesas"). No alcanza
 // para armar el pedido: hay que preguntarle cuales quiere, con las opciones a la vista.
 function mentionsBurgersWithoutChoosing(text) {
-  const normalized = normalizeText(text)
-  return /\b(hamburguesa|hamburguesas|burger|burgers|burguer|burguers|burguesa|burguesas)\b/.test(normalized)
+  return burgerFamilyRegex().test(normalizeText(text))
 }
 
 function buildBurgerChoicesReply(catalog) {
