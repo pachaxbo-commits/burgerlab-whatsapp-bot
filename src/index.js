@@ -360,7 +360,11 @@ async function handleIncomingMessage({ chatId, text }) {
       const previousItems = state.orderDraft?.items || pendingOrderToDraft(state.pendingOrder)?.items || []
       const result = {
         ...aiResult,
-        items: enforcePapasRule(previousItems, enforceCatalogItems(aiResult.items, catalog), text, catalog),
+        items: enforceTripleRule(
+          enforcePapasRule(previousItems, enforceCatalogItems(aiResult.items, catalog), text, catalog),
+          text,
+          catalog,
+        ),
       }
 
       if (result.intent === 'confirm_order' && state.pendingOrder) {
@@ -1301,6 +1305,47 @@ function enforcePapasRule(previousItems, items, text, catalog) {
     const conPapas = findCatalogProduct(catalog, item.productId.replace('-sin-papas', '-con-papas'))
     if (!conPapas) return item
     return { ...item, productId: conPapas.id, name: conPapas.name, basePrice: Number(conPapas.price || 0) }
+  })
+}
+
+// "Triple" no existe como producto: es la DOBLE con una carne extra. La IA a veces la mapea a la
+// doble y se olvida la carne, y ahi se cobra de menos (Bs 37 en vez de Bs 52). Se aplica solo
+// cuando hay UNA sola hamburguesa en el pedido: con varias no hay forma de saber cual era la
+// triple, y ahi es mejor dejar que decida la IA que arriesgar cobrarle carne extra a la que no
+// correspondia.
+function enforceTripleRule(items, text, catalog) {
+  if (!/\btriples?\b/.test(normalizeText(text))) return items
+
+  const burgers = (items || []).filter((item) => /^(burger-lab|bbq)-/.test(item.productId || ''))
+  if (burgers.length !== 1) return items
+
+  const carneExtra = (catalog?.quickExtras || []).find((extra) => /carne/i.test(extra.name || ''))
+
+  return (items || []).map((item) => {
+    if (item !== burgers[0]) return item
+
+    let next = item
+    if (item.productId.includes('-simple-')) {
+      const doble = findCatalogProduct(catalog, item.productId.replace('-simple-', '-doble-'))
+      if (doble) next = { ...next, productId: doble.id, name: doble.name, basePrice: Number(doble.price || 0) }
+    }
+
+    if (carneExtra && !(next.extras || []).some((extra) => extra.id === carneExtra.id)) {
+      next = { ...next, extras: [...(next.extras || []), carneExtra] }
+    }
+
+    // Con la carne extra ya en la lista, la nota "(carne extra (triple))" que a veces agrega la IA
+    // sobra y confunde a la cocina, que la puede leer como una segunda carne.
+    if ((next.extras || []).some((extra) => /carne/i.test(extra.name || ''))) {
+      const notaLimpia = String(next.note || '')
+        .replace(/\(?\s*carne\s+extra\s*(\(triple\))?\s*\)?/gi, '')
+        .replace(/\(?\s*triple\s*\)?/gi, '')
+        .replace(/\s{2,}/g, ' ')
+        .replace(/^[\s,;.]+|[\s,;.]+$/g, '')
+      next = { ...next, note: notaLimpia }
+    }
+
+    return next
   })
 }
 
