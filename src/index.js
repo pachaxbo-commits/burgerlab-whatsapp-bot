@@ -1074,7 +1074,20 @@ function mergeOrderItems(prev, next, text) {
   if (isReset || !prevItems.length) return applyNotesToItems(nextItems, text)
   if (!nextItems.length) return applyNotesToItems(prevItems, text)
 
-  const isAddition = /\b(agrega|agregame|suma|sumale|tambien|mas|y|mas una|mas 2)\b/i.test(text) || nextItems.some((n) => !prevItems.some((p) => p.productId === n.productId))
+  // Sumar cuando el cliente queria reemplazar es el error mas caro posible, asi que se exige una
+  // señal explicita de agregar. Antes alcanzaba con la palabra suelta "y", con "mas", o con que
+  // el mensaje trajera cualquier producto nuevo: "y sacale una hamburguesa, quiero solo una"
+  // subia el pedido de 2 a 3, y "cambia una coca por una fanta" dejaba 3 cocas en vez de 1.
+  // Un producto nuevo se agrega igual mas abajo; eso no es motivo para sumarle a los que ya estan.
+  const wantsReplacement =
+    /\b(cambia|cambiame|cambiale|mejor|solo|solamente|unicamente|en vez de|en lugar de|saca|sacame|sacale|quita|quitame|quitale|elimina|eliminar|borra|borrar|dejame|deja|corrige|corregir|que sean|que sea)\b/i.test(text)
+  // "una coca mas" tambien es agregar, pero "nada mas" / "algo mas?" no: ahi "mas" solo cierra la
+  // frase y tomarlo como agregar duplicaria productos que el cliente no pidio.
+  const mentionsMore = /\bmas\b/i.test(text) && !/\b(nada|no|algo|alguna cosa|que)\s+mas\b/i.test(text)
+  const wantsAddition =
+    /\b(agrega|agregame|agregale|anade|anademe|anadir|suma|sumale|sumame|tambien|ademas|aumenta|aumentame|otra|otro)\b/i.test(text) ||
+    mentionsMore
+  const isAddition = wantsAddition && !wantsReplacement
 
   const merged = [...prevItems]
   for (const newItem of nextItems) {
@@ -1611,9 +1624,15 @@ function buildMissingFieldsReply(missingFields, { text = '', catalog = null, sta
     if (state && !hasSeenOrderTemplate(state)) {
       return buildOrderTemplateMessage()
     }
+
+    return ORDER_FORMAT_REDIRECT_MESSAGE
   }
 
-  return ORDER_FORMAT_REDIRECT_MESSAGE
+  // Ya hay productos y solo faltan datos sueltos: decir cuales. El cliente que va dando los datos
+  // de a un mensaje recibia cuatro veces seguidas el mismo "llenar los datos segun formato" sin
+  // enterarse nunca de que era lo que faltaba.
+  const pending = missingFields.join(', ').replace(/, ([^,]*)$/, ' y $1')
+  return `Ya tengo tu pedido anotado. Solo me falta ${pending}.`
 }
 
 function buildContextualRecoveryReply(state) {
@@ -1827,9 +1846,14 @@ function looksLikeConcreteOrderText(text) {
 // dejarlas pasar reabre el bug de que la IA reescriba el pedido por su cuenta.
 function messageCanChangeItems(text) {
   const normalized = normalizeText(text)
+  // Correccion de cantidad sin nombrar el producto ("no espera, mejor 3"). Se exige que despues
+  // de la palabra venga un numero: si no, "mejor pago con qr" contaria como cambio de pedido y
+  // volveria a dejar que la IA reescriba los productos, que es el bug que ya costo caro antes.
+  const quantityCorrection = /\b(mejor|solo|solamente|unicamente|que sean|que sea|dejame|deja|ponme|pon)\s+(?:sean\s+)?(\d+|un|una|uno|dos|tres|cuatro|cinco|seis)\b/.test(normalized)
   return (
     looksLikeConcreteOrderText(text) ||
     isOrderStartRequest(text) ||
+    quantityCorrection ||
     /\b(agrega|agregame|agregale|aumenta|aumentame|anade|anadir|saca|sacame|sacale|saquen|quita|quitame|quitale|elimina|eliminar|borra|borrar|cambia|cambiame|cambiale|modifica|modificame|sin|extra|extras|adicional|adicionales|porcion|porciones)\b/.test(normalized)
   )
 }
