@@ -78,6 +78,11 @@ export class ConversationStore {
   setOrderDraft(chatId, draft) {
     const state = this.get(chatId)
     state.orderDraft = draft
+    // Si el pedido volvio a estar en construccion, el resumen que se mostro antes ya no vale.
+    // Sin esto quedaba guardado el viejo: un cliente cambio a delivery y despues pidio agregar
+    // una hamburguesa, y el bot le mostro el resumen anterior, que todavia decia "Recojo en
+    // restaurante" y no tenia la hamburguesa nueva.
+    state.pendingOrder = null
     this.scheduleSave()
   }
 

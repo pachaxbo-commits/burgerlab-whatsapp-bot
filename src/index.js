@@ -293,13 +293,6 @@ async function handleIncomingMessage({ chatId, text }) {
         return
       }
 
-      if (state.pendingOrder && isSummaryRequest(text)) {
-        const reply = `${state.pendingOrder.summary}\n\nAun tengo este pedido listo. Respondeme "Si" para confirmarlo o "No" para cancelarlo.`
-        conversations.add(chatId, 'bot', reply)
-        await whatsapp.sendText(chatId, reply)
-        return
-      }
-
       if (!state.pendingOrder && !state.orderDraft?.items?.length && state.lastOrderId && isThanksText(text)) {
         const reply = 'Con gusto, gracias a ti. Estamos atentos a tu pedido.'
         conversations.add(chatId, 'bot', reply)
@@ -1769,10 +1762,6 @@ function isQuestionOrEditRequest(text) {
   return /\?/.test(text) || /\b(por\s*que|porque|cuanto|cuanta|como|no\s+seria|precio|costo|duda|modificar|cambiar|editar|adicional|extra|papas|tocino)\b/.test(norm)
 }
 
-function isSummaryRequest(text) {
-  const normalized = normalizeText(text)
-  return /\b(resumen|total|cuanto|cuanto era|pedido|que pedi)\b/.test(normalized)
-}
 function buildOrderSummary(orderInput) {
   const itemLines = orderInput.items.map((item) => {
     const extras = item.modifiers.extras.length
