@@ -310,11 +310,18 @@ function isWithinDispatchNoticeWindow(order) {
   return Number.isFinite(createdAt) && Number.isFinite(deliveredAt) && deliveredAt <= createdAt + delayMinutes * 60 * 1000 + graceMs
 }
 
+// El dia se calcula SIEMPRE en la zona horaria del restaurante, nunca con la hora local del
+// servidor: Railway corre en UTC, asi que con hora local todo pedido hecho despues de las 20:00
+// de Bolivia (00:00 UTC) se guardaba en el dia SIGUIENTE. La escritura salia bien y el bot
+// respondia "lo paso a caja", pero el comandero mira el dia de hoy en hora local y no lo
+// encontraba nunca. Tres pedidos reales quedaron invisibles asi.
 function getTodayKey(now = new Date()) {
-  const year = now.getFullYear()
-  const month = String(now.getMonth() + 1).padStart(2, '0')
-  const day = String(now.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: config.timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(now)
 }
 
 function getFirebaseCredential() {

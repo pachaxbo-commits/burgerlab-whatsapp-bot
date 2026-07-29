@@ -116,9 +116,17 @@ async function handleIncomingMessage({ chatId, text }) {
 
         const inferred = inferFieldsFromText(text)
         const isProof = isPaymentProofMessage(text)
-        const isEditItemsRequest = isQuestionOrEditRequest(text) && !isProof && !inferred.deliveryAddress
+        // isQuestionOrEditRequest se queda corto: su lista tiene "papas" y "tocino" pero no
+        // "cebolla", asi que "Perdon quiero que una sea sin cebolla" no contaba como edicion y el
+        // bot le volvia a pedir el comprobante ignorando el cambio. messageCanChangeItems ya
+        // conoce todo el vocabulario de productos y extras.
+        const isEditItemsRequest = (isQuestionOrEditRequest(text) || messageCanChangeItems(text)) && !isProof && !inferred.deliveryAddress
 
         if (isEditItemsRequest) {
+          // Hay que devolver el pedido al borrador ANTES de soltar la espera del comprobante:
+          // setAwaitingPaymentProof vacia pendingOrder y orderDraft, asi que sin esto el cliente
+          // pierde todo lo que ya habia armado y tiene que empezar de cero.
+          state.orderDraft = pendingOrderToDraft({ orderInput: state.awaitingPaymentProof.orderInput })
           state.awaitingPaymentProof = null
           conversations.scheduleSave()
         } else {
@@ -170,6 +178,41 @@ async function handleIncomingMessage({ chatId, text }) {
           await whatsapp.sendText(chatId, reply)
           return
         }
+      }
+
+      // Respuesta a "¿como prefieres pagar?" (solo recojo). El pedido todavia no entro al
+      // sistema: si paga en el restaurante entra ahora, y si elige QR se le manda y entra recien
+      // cuando llegue el comprobante.
+      if (state.pendingClarification === 'payment_pickup' && state.pendingOrder) {
+        if (isPayAtRestaurantAnswer(text)) {
+          const orderInput = state.pendingOrder.orderInput
+          state.pendingClarification = null
+          await registerConfirmedOrder(chatId, orderInput, {
+            expectedPaymentMethod: 'cash',
+            paymentReviewNote: 'El cliente paga al recoger en el restaurante.',
+          })
+          const reply = [
+            'Perfecto, registre tu pedido.',
+            `Pagas los Bs ${orderInput.total} en el restaurante cuando recojas.`,
+            'En caja lo van a confirmar y te aviso el tiempo exacto de salida.',
+          ].join('\n')
+          conversations.add(chatId, 'bot', reply)
+          await whatsapp.sendText(chatId, reply)
+          return
+        }
+
+        if (isPayNowQrAnswer(text)) {
+          const orderInput = { ...state.pendingOrder.orderInput, expectedPaymentMethod: 'qr' }
+          const summary = state.pendingOrder.summary
+          state.pendingClarification = null
+          await requestQrPaymentProof(chatId, orderInput, summary)
+          return
+        }
+
+        const reply = `No me quedo claro. ${PICKUP_PAYMENT_QUESTION}`
+        conversations.add(chatId, 'bot', reply)
+        await whatsapp.sendText(chatId, reply)
+        return
       }
 
       // Respuesta a "¿con papas o sin papas?". Se resuelve aca y no en el flujo normal: si no,
@@ -244,21 +287,7 @@ async function handleIncomingMessage({ chatId, text }) {
       }
 
       if (state.pendingOrder && isConfirmText(text)) {
-        if (shouldRequestQrPaymentProof(state.pendingOrder.orderInput)) {
-          await requestQrPaymentProof(chatId, state.pendingOrder.orderInput, state.pendingOrder.summary)
-          return
-        }
-
-        const created = await createWhatsappOrderWithRetry(state.pendingOrder.orderInput)
-        conversations.setLastOrder(chatId, created.orderId)
-
-        const reply = [
-          'Perfecto, registre tu pedido.',
-          'En caja lo van a confirmar y te aviso el tiempo exacto de salida.',
-        ].join('\n')
-
-        conversations.add(chatId, 'bot', reply)
-        await whatsapp.sendText(chatId, reply)
+        await handleOrderConfirmation(chatId, state)
         return
       }
 
@@ -402,24 +431,14 @@ async function handleIncomingMessage({ chatId, text }) {
         catalog,
         currentDraft: state.orderDraft || pendingOrderToDraft(state.pendingOrder),
       })
-      const result = { ...aiResult, items: enforceCatalogExtras(aiResult.items, catalog) }
+      const previousItems = state.orderDraft?.items || pendingOrderToDraft(state.pendingOrder)?.items || []
+      const result = {
+        ...aiResult,
+        items: keepPapasVariant(previousItems, enforceCatalogExtras(aiResult.items, catalog), text, catalog),
+      }
 
       if (result.intent === 'confirm_order' && state.pendingOrder) {
-        if (shouldRequestQrPaymentProof(state.pendingOrder.orderInput)) {
-          await requestQrPaymentProof(chatId, state.pendingOrder.orderInput, state.pendingOrder.summary)
-          return
-        }
-
-        const created = await createWhatsappOrderWithRetry(state.pendingOrder.orderInput)
-        conversations.setLastOrder(chatId, created.orderId)
-
-        const reply = [
-          'Perfecto, registre tu pedido.',
-          'En caja lo van a confirmar y te aviso el tiempo exacto de salida.',
-        ].join('\n')
-
-        conversations.add(chatId, 'bot', reply)
-        await whatsapp.sendText(chatId, reply)
+        await handleOrderConfirmation(chatId, state)
         return
       }
 
@@ -525,7 +544,7 @@ async function handleIncomingMessage({ chatId, text }) {
 
       if (hasOrderSignal) {
         conversations.setOrderDraft(chatId, mergedResult)
-        await finalizeOrderDraft({ chatId, state, draft: mergedResult, catalog, text })
+        await finalizeOrderDraft({ chatId, state, draft: mergedResult, catalog, text, aiReply: result.reply })
         return
       }
 
@@ -782,6 +801,10 @@ export { handleIncomingMessage, whatsapp, TEST_MODE }
 // Si avisa que paga en persona ("con qr pero pagare ahi"), mandarle el QR y quedarse esperando
 // un comprobante que nunca va a llegar deja el pedido trabado sin registrarse.
 function shouldRequestQrPaymentProof(orderInput) {
+  // En delivery no se cobra nunca por el chat, aunque el cliente pida el QR: el total lo cobra la
+  // moto al entregar (efectivo o QR) y el envio va aparte. Mandarle el QR del restaurante lo
+  // haria pagar dos veces o pagar de menos.
+  if (orderInput?.fulfillmentType === 'delivery') return false
   return orderInput?.expectedPaymentMethod === 'qr' && !orderInput?.paymentOnArrival
 }
 
@@ -803,10 +826,77 @@ async function requestQrPaymentProof(chatId, orderInput, summary) {
   await whatsapp.sendImage(chatId, paymentQrImagePath, caption)
 }
 
+const PICKUP_PAYMENT_QUESTION = [
+  '¿Cómo prefieres pagar?',
+  '',
+  '- *Con QR ahora* por este chat (te envío el QR y me mandas el comprobante)',
+  '- *Directo en el restaurante* cuando recojas tu pedido',
+].join('\n')
+
+function isPayAtRestaurantAnswer(text) {
+  const normalized = normalizeText(text)
+  if (/\bqr\b/.test(normalized)) return false
+  return /\b(restaurante|local|efectivo|cash|ahi|alli|alla|al recoger|cuando recoja|cuando vaya|al llegar|en persona|directo|contra entrega|contraentrega|despues|luego)\b/.test(normalized)
+}
+
+function isPayNowQrAnswer(text) {
+  return /\bqr\b/.test(normalizeText(text))
+}
+
+// El pago del delivery nunca pasa por el chat: la moto cobra el total al entregar, en efectivo o
+// QR, y el envio se cotiza aparte. Por eso el pedido de delivery entra al sistema apenas se
+// confirma, sin pedir comprobante.
+async function registerConfirmedOrder(chatId, orderInput, { paymentReviewNote = '', expectedPaymentMethod = null } = {}) {
+  const finalInput = {
+    ...orderInput,
+    ...(expectedPaymentMethod ? { expectedPaymentMethod } : {}),
+    ...(paymentReviewNote ? { paymentReviewNote } : {}),
+  }
+  const created = await createWhatsappOrderWithRetry(finalInput)
+  conversations.setLastOrder(chatId, created.orderId)
+  return created
+}
+
+async function handleOrderConfirmation(chatId, state) {
+  const orderInput = state.pendingOrder.orderInput
+
+  if (orderInput.fulfillmentType === 'delivery') {
+    await registerConfirmedOrder(chatId, orderInput, {
+      paymentReviewNote: 'El cliente paga el total directamente al delivery (efectivo o QR). El envio se cobra aparte.',
+    })
+    const reply = [
+      'Perfecto, registre tu pedido.',
+      '',
+      `El total de Bs ${orderInput.total} lo pagas directamente con la moto, ya sea en efectivo o por QR.`,
+      'El costo del envio se cotiza aparte y tambien lo pagas con el delivery.',
+      '',
+      'En caja lo van a confirmar y te aviso el tiempo exacto de salida.',
+    ].join('\n')
+    conversations.add(chatId, 'bot', reply)
+    await whatsapp.sendText(chatId, reply)
+    return
+  }
+
+  // Recojo: el pedido todavia NO entra al sistema. Primero se define como paga, porque si elige
+  // QR hay que esperar el comprobante antes de mandarlo a caja.
+  state.pendingClarification = 'payment_pickup'
+  conversations.scheduleSave()
+  conversations.add(chatId, 'bot', PICKUP_PAYMENT_QUESTION)
+  await whatsapp.sendText(chatId, PICKUP_PAYMENT_QUESTION)
+}
+
 // Ultimo tramo comun a los dos caminos (el deterministico y el de la IA): faltantes, aclaracion
 // de papas y resumen. Estaba duplicado y era cuestion de tiempo que los dos caminos se
 // desincronizaran y uno preguntara cosas que el otro no.
-async function finalizeOrderDraft({ chatId, state, draft, catalog, text }) {
+async function finalizeOrderDraft({ chatId, state, draft, catalog, text, aiReply = '' }) {
+  // Si el cliente pregunto algo en el mismo mensaje del pedido ("...Tiene motito ? O mando a
+  // recoger ?"), la respuesta de la IA se antepone: antes se descartaba y el bot solo pedia el
+  // dato que faltaba, dejando la pregunta sin contestar.
+  // Hay que sacar las URLs antes de buscar el signo de pregunta: el link de ubicacion de WhatsApp
+  // trae uno en la query ("maps.google.com/?q=...") y hacia que el bot creyera que el cliente
+  // preguntaba algo, colando una respuesta suelta arriba del resumen.
+  const textWithoutUrls = String(text || '').replace(/https?:\/\/\S+/gi, '')
+  const prefix = aiReply && /\?/.test(textWithoutUrls) ? `${aiReply}\n\n` : ''
   const missingFields = getMissingOrderFields(draft)
   if (missingFields.length > 0) {
     if (shouldProceedWithQrWhileWaitingLocation(draft, missingFields)) {
@@ -814,7 +904,7 @@ async function finalizeOrderDraft({ chatId, state, draft, catalog, text }) {
       await requestQrPaymentProof(chatId, orderInput, buildOrderSummary(orderInput))
       return
     }
-    const reply = buildMissingFieldsReply(missingFields, { text, catalog, state })
+    const reply = `${prefix}${buildMissingFieldsReply(missingFields, { text, catalog, state })}`
     conversations.add(chatId, 'bot', reply)
     await whatsapp.sendText(chatId, reply)
     return
@@ -846,7 +936,7 @@ async function finalizeOrderDraft({ chatId, state, draft, catalog, text }) {
   }
 
   conversations.setPendingOrder(chatId, orderInput, summary)
-  const reply = `${summary}\n\nConfirmas el pedido?`
+  const reply = `${prefix}${summary}\n\nConfirmas el pedido?`
   conversations.add(chatId, 'bot', reply)
   await whatsapp.sendText(chatId, reply)
 }
@@ -1251,6 +1341,12 @@ function buildEmptyAiResult() {
 
 function isSimpleEnoughForQuickPath(normalizedText) {
   if (/\btriple\b/.test(normalizedText)) return false
+  // Si el cliente pregunta algo, va a la IA aunque el mismo mensaje traiga el pedido: pasa
+  // seguido que sean las dos cosas a la vez ("Una BBQ LAB simple con papa a nombre de Viviana.
+  // Tiene motito ? O mando a recoger ?"). El camino rapido solo saca datos por palabra clave: se
+  // quedaba con "recoger" como si el cliente ya hubiera elegido, y contestaba pidiendo el
+  // siguiente dato sin responder nunca lo que le preguntaron.
+  if (/\?/.test(normalizedText)) return false
   const burgerFamilyMentions = (normalizedText.match(new RegExp(`\\b(?:${BURGER_FAMILY_SOURCE}|bbq|barbacoa)\\b`, 'g')) || []).length
   if (burgerFamilyMentions > 1) return false
   if (/\by\s+(otra|otro|una|un|1|2|3)\b/.test(normalizedText)) return false
@@ -1548,6 +1644,23 @@ function applyPapasAnswer(items, catalog, answerText) {
   return result
 }
 
+// "sin cebolla" es una NOTA del item, no otro producto. La IA lo confundio con "sin papas" y le
+// cambio a un cliente una hamburguesa Con Papas (Bs 22) por una Sin Papas (Bs 19) cuando lo unico
+// que pidio fue que una fuera sin cebolla. Si el mensaje no habla de papas, la version del
+// producto que el cliente ya tenia no se toca.
+function keepPapasVariant(previousItems, nextItems, text, catalog) {
+  if (/\bpapas?\b/.test(normalizeText(text))) return nextItems
+  if (!previousItems?.length) return nextItems
+
+  return (nextItems || []).map((item) => {
+    const sibling = getPapasSibling(catalog, item.productId)
+    if (!sibling) return item
+    if (previousItems.some((previous) => previous.productId === item.productId)) return item
+    if (!previousItems.some((previous) => previous.productId === sibling.id)) return item
+    return { ...item, productId: sibling.id, name: sibling.name, basePrice: Number(sibling.price || 0) }
+  })
+}
+
 function getMissingOrderFields(result) {
   const missing = []
   if (!result.customerName) missing.push('tu nombre')
@@ -1558,12 +1671,10 @@ function getMissingOrderFields(result) {
   return missing
 }
 
-function shouldProceedWithQrWhileWaitingLocation(result, missingFields) {
-  return result.items.length > 0 &&
-    result.paymentMethod === 'qr' &&
-    result.fulfillmentType === 'delivery' &&
-    missingFields.length === 1 &&
-    missingFields[0] === 'tu ubicacion de WhatsApp'
+// Quedo sin uso: adelantaba el cobro por QR de un pedido con delivery mientras se esperaba la
+// ubicacion, y en delivery ya no se cobra nunca por el chat (el total lo cobra la moto).
+function shouldProceedWithQrWhileWaitingLocation() {
+  return false
 }
 
 const ORDER_FORMAT_REDIRECT_MESSAGE = 'Claro, por favor llenar los datos según formato (como en el ejemplo)'
@@ -2070,16 +2181,15 @@ function buildOrderSummary(orderInput) {
       ? buildDeliverySummaryLines(orderInput)
       : ['Recojo en restaurante']
 
-  const basePaymentLabel = {
-    cash: 'Efectivo',
-    qr: 'QR',
-    mixed: 'Mixto',
-  }[orderInput.expectedPaymentMethod] || 'Efectivo'
-  // Si paga en persona hay que dejarlo escrito: caja no debe esperar ningun comprobante por el
-  // chat, y quien entrega tiene que saber que todavia tiene que cobrar.
-  const paymentLabel = orderInput.paymentOnArrival
-    ? `${basePaymentLabel} (paga ${orderInput.fulfillmentType === 'delivery' ? 'al recibir el pedido' : 'en el restaurante'})`
-    : basePaymentLabel
+  // En delivery el cobro nunca pasa por el chat: se aclara que el total lo paga con la moto y que
+  // el envio se cotiza aparte. En recojo no se muestra nada de pago todavia - se le pregunta
+  // recien cuando confirma, porque si elige QR hay que esperar el comprobante.
+  const paymentLines =
+    orderInput.fulfillmentType === 'delivery'
+      ? ['Pago: el total lo pagas directamente con la moto, en efectivo o por QR.']
+      : orderInput.expectedPaymentMethod === 'qr'
+        ? ['Pago: QR']
+        : []
 
   return [
     'Te paso el resumen de tu pedido:',
@@ -2088,7 +2198,7 @@ function buildOrderSummary(orderInput) {
     `Pedido: Bs ${orderInput.productSubtotal ?? orderInput.total}`,
     ...deliveryLine,
     `Total del pedido: Bs ${orderInput.total}`,
-    `Pago: ${paymentLabel}`,
+    ...paymentLines,
   ].join('\n')
 }
 
@@ -2097,7 +2207,7 @@ function buildDeliverySummaryLines(orderInput) {
     `Envio: ${orderInput.deliveryAddress || 'ubicacion/direccion pendiente'}`,
   ]
 
-  lines.push('Envio: se paga directamente al delivery.')
+  lines.push('Envio: se cotiza aparte y tambien lo pagas directamente al delivery.')
   return lines
 }
 
