@@ -36,6 +36,10 @@ const orderSchema = z.object({
         basePrice: numberOrDefault(0),
         quantity: numberOrDefault(1).transform((value) => (value > 0 ? Math.round(value) : 1)),
         note: z.string().default(''),
+        // true solo si el cliente escribio "triple" para ESE item. Es una pregunta sobre lo que
+        // dijo el cliente, no sobre el producto elegido: se probo con un campo "tamaño" y el
+        // modelo respondia "doble", que es el producto que termina usando una triple.
+        customerAskedTriple: z.boolean().default(false),
         options: z.array(z.string()).default([]),
         extras: z.array(z.object({ id: z.string(), name: z.string(), price: numberOrDefault(0) })).default([]),
       }),
@@ -250,7 +254,11 @@ Objetivo:
 - Si el cliente pide QUITAR, sacar, eliminar o cancelar un item específico de un pedido que ya se venía armando (ver "Pedido que ya se venia armando" mas abajo si existe), devuelve la lista completa de items SIN ese item (no lo incluyas), manteniendo los demás items intactos. No dejes items vacío a menos que el cliente haya quitado todo.
 - IMPORTANTE - un mensaje puede describir VARIOS items distintos a la vez (ej. "una BBQ con doble tocino y una Burger Lab sin cebolla"): identifica cada hamburguesa/producto por separado como un item independiente en la lista "items", y asegurate de que cada extra, nota o modificador quede asociado SOLO al item al que el cliente se refería, no a todos los items del pedido.
 - Ten cuidado de no confundir el tamaño de la hamburguesa (simple/doble) con la cantidad de un extra/topping (ej. "doble porción de tocino" o "doble tocino" es 2 unidades del extra tocino en una hamburguesa que puede seguir siendo simple; no la conviertas en hamburguesa doble solo por esa frase).
-- El catálogo solo tiene hamburguesas "simple" y "doble". Si el cliente pide una "TRIPLE", registrala como la versión DOBLE de ese producto MÁS el extra "Carne extra". Eso es exactamente una triple y el precio queda correcto. No agregues ninguna nota como "(triple)" ni "(carne extra)": el extra ya aparece solo en el resumen y repetirlo confunde a la cocina. Solo si no existiera "Carne extra" en el catálogo, dejá la nota "carne extra (triple)" y avisale al cliente en el reply.
+- "customerAskedTriple" es true SOLO en los items donde el cliente escribió literalmente "triple" (o "triples") para ESE producto. Es una pregunta sobre las palabras del cliente, NO sobre el producto que elegiste: una triple se registra con el producto DOBLE, pero igual lleva customerAskedTriple=true. Ej. en "2 bbq triple y 1 burger lab doble": las bbq van con true y la burger lab con false.
+- TRIPLE: en el catálogo solo figuran "simple" y "doble", pero la triple SÍ se puede pedir y NUNCA hay que rechazarla ni pedirle al cliente que elija otra. Una triple es, exactamente, el producto DOBLE de esa misma marca MÁS el extra "Carne extra". Registrala siempre así (esto no es inventar un producto: es la forma correcta de armar una triple, y el precio queda bien). Ejemplos:
+  · "1 burguerlab triple con papas" -> 1x "Burger Lab DOBLE Con Papas" con el extra "Carne extra", customerAskedTriple=true.
+  · "2 bbq triple sin papas" -> 2x "BBQ DOBLE Sin Papas" con el extra "Carne extra", customerAskedTriple=true.
+  No agregues ninguna nota como "(triple)" ni "(carne extra)": el extra ya aparece solo en el resumen y repetirlo confunde a la cocina.
 - Si el cliente menciona un producto genérico sin especificar cuál (ej. solo dice "2 hamburguesas" sin decir cuál del menú), NO adivines ni elijas por él: deja items vacío para eso, indica en missingFields que falta especificar cuál hamburguesa, y en el reply pregunta explícitamente cuáles hamburguesas del menú desea (menciona las opciones: Burger Lab o BBQ Lab, simple o doble, con o sin papas).
 - Si el cliente pide agregar, aumentar, quitar o cambiar algo de un pedido que ya venías armando en la conversación, ACTUALIZA la lista de items combinando lo nuevo con lo que ya tenías (no reinicies el pedido ni vuelvas a pedir datos que el cliente ya dio antes en la conversación).
 - Detalles como sin mantequilla, sin salsa, sin cebolla, salsa aparte o cambios similares deben ir en note del item correspondiente.
@@ -293,6 +301,7 @@ Devuelve SOLO JSON con esta forma:
       "basePrice": 25,
       "quantity": 1,
       "note": "",
+      "customerAskedTriple": false,
       "options": [],
       "extras": []
     }
