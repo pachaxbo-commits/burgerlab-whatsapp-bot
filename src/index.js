@@ -215,25 +215,6 @@ async function handleIncomingMessage({ chatId, text }) {
         return
       }
 
-      // Respuesta a "¿con papas o sin papas?". Se resuelve aca y no en el flujo normal: si no,
-      // "una con papas" se toma como un pedido nuevo de papas en vez de como la respuesta a la
-      // pregunta que el bot acaba de hacer.
-      if (
-        state.pendingClarification === 'papas' &&
-        state.orderDraft?.items?.length &&
-        /\b(con|sin)\s+papas?\b/.test(normalizeText(text))
-      ) {
-        const papasCatalog = await getCatalogForParsing()
-        const updatedDraft = {
-          ...state.orderDraft,
-          items: applyPapasAnswer(state.orderDraft.items, papasCatalog, text),
-        }
-        state.pendingClarification = null
-        conversations.setOrderDraft(chatId, updatedDraft)
-        await finalizeOrderDraft({ chatId, state, draft: updatedDraft, catalog: papasCatalog, text })
-        return
-      }
-
       if (isPaymentProofMessage(text)) {
         if (state.pendingOrder) {
           const orderInput = {
@@ -356,85 +337,37 @@ async function handleIncomingMessage({ chatId, text }) {
         return
       }
 
-      // A quien escribe se le manda el formato, no un saludo generico. Antes esto pedia ademas
-      // que el primer mensaje pareciera un pedido, asi que un "Hola" suelto caia en la IA, que
-      // contestaba un saludo amable y nada mas - el cliente quedaba sin saber como pedir. Si el
-      // mensaje es una pregunta concreta de otra cosa (horarios, envio, ubicacion), eso se
-      // responde primero y el formato va despues, cuando de verdad quiera pedir.
-      const shouldSendMenuForOrderStart = isFirstCustomerMessage && !isSpecificNonOrderQuestion(text)
-      if (isMenuRequest(text) || shouldSendMenuForOrderStart) {
-        const caption = buildOrderTemplateMessage()
-        conversations.add(chatId, 'bot', caption)
-        await whatsapp.sendImage(chatId, menuImagePath, caption)
-        if (!looksLikeConcreteOrderText(text) && !looksLikeStructuredOrderMessage(text)) return
-      }
-
-      const hasOrderInProgress = Boolean(state.orderDraft?.items?.length || state.pendingOrder)
-
-      if (isDeliveryPricingRequest(text) && !looksLikeStructuredOrderMessage(text) && !hasOrderInProgress) {
-        await sendDeliveryPricingInfo(chatId)
-        return
-      }
-
-      if (
-        isPaymentQrRequest(text) &&
-        !state.pendingOrder &&
-        !looksLikeConcreteOrderText(text) &&
-        !looksLikeStructuredOrderMessage(text) &&
-        !hasOrderInProgress
-      ) {
-        await sendPaymentQrInfo(chatId)
-        return
-      }
-
-      if (isRestaurantLocationRequest(text) && !looksLikeStructuredOrderMessage(text) && !hasOrderInProgress) {
-        const reply = 'Claro, te envio la ubicacion de Burger Lab.'
-        conversations.add(chatId, 'bot', reply)
-        await whatsapp.sendText(chatId, reply)
-        await whatsapp.sendLocation(chatId, {
-          latitude: config.restaurantLatitude,
-          longitude: config.restaurantLongitude,
-          name: config.businessName,
-          address: config.restaurantAddress,
-        })
-        return
-      }
-
+      // El menu, la ubicacion y el tarifario ya NO se deciden por palabras clave antes de la IA.
+      // Ese atajo interceptaba mensajes que la IA sabia manejar: "quiero pedir para comer ahi en
+      // el restaurante" recibia el formato y se cortaba ahi, sin llegar nunca a explicarle que
+      // eso se pide en caja. Ahora se decide despues, segun lo que la IA entendio.
       const catalog = await getCatalogForParsing()
-      const quickResult = inferSimpleOrderFromCatalog(text, catalog)
-      // isSimpleEnoughForQuickPath ya filtra el intento de AGREGAR un item por palabra clave
-      // (mas arriba, dentro de inferSimpleOrderFromCatalog), pero el segundo camino de abajo
-      // (orderDraft con items + "algun dato util" en el texto) NO pasaba por ese mismo filtro -
-      // asi que un mensaje de negacion/remocion como "ya no quiero la coca, sacala" podia
-      // colarse igual (el texto "parece util" por una adivinanza debil de nombre) y terminar
-      // en el camino determinista, que no entiende negaciones y dejaba todo intacto.
-      const isSimpleForQuickPath = isSimpleEnoughForQuickPath(normalizeText(text))
-      if (quickResult.items.length || (isSimpleForQuickPath && state.orderDraft?.items?.length && hasUsefulInferredFields(text))) {
-        const baseDraft = state.orderDraft || pendingOrderToDraft(state.pendingOrder) || buildEmptyAiResult()
-        const deterministicResult = quickResult.items.length ? quickResult : buildEmptyAiResult()
-        const mergedResult = mergeOrderDraft(baseDraft, deterministicResult, text)
-        conversations.setOrderDraft(chatId, mergedResult)
-        await finalizeOrderDraft({ chatId, state, draft: mergedResult, catalog, text })
-        return
-      }
 
-      if (isSimpleForQuickPath && state.orderDraft?.items?.length && hasUsefulInferredFields(text)) {
-        const mergedResult = mergeOrderDraft(state.orderDraft, buildEmptyAiResult(), text)
-        conversations.setOrderDraft(chatId, mergedResult)
-        await finalizeOrderDraft({ chatId, state, draft: mergedResult, catalog, text })
-        return
-      }
-
+      // ENTENDER es tarea de la IA, no de listas de palabras. Antes habia un "camino rapido" que
+      // interpretaba el mensaje con expresiones regulares y solo caia en la IA si no reconocia
+      // nada. Ese atajo fue la causa de casi todos los errores: no encontraba "burguer" porque
+      // buscaba "burger", sumaba en vez de restar por la palabra suelta "y", se quedaba con
+      // "recoger" de una pregunta como si el cliente ya hubiera elegido. El espanol tiene
+      // infinitas formas de escribir lo mismo y cada lista de palabras siempre va a estar
+      // incompleta. Ahora todos los mensajes van a la IA y el codigo se limita a VERIFICAR.
       const aiResult = await understandMessage({
         message: text,
         conversation: state.messages,
         catalog,
         currentDraft: state.orderDraft || pendingOrderToDraft(state.pendingOrder),
       })
+
+      // La IA avisa cuando prefiere no arriesgar una respuesta: se le pasa a una persona y el bot
+      // se queda callado, que es mejor que contestar cualquier cosa.
+      if (aiResult.needsHuman) {
+        await notifyHumanSupport(chatId, text)
+        return
+      }
+
       const previousItems = state.orderDraft?.items || pendingOrderToDraft(state.pendingOrder)?.items || []
       const result = {
         ...aiResult,
-        items: keepPapasVariant(previousItems, enforceCatalogExtras(aiResult.items, catalog), text, catalog),
+        items: enforcePapasRule(previousItems, enforceCatalogItems(aiResult.items, catalog), text, catalog),
       }
 
       if (result.intent === 'confirm_order' && state.pendingOrder) {
@@ -461,7 +394,7 @@ async function handleIncomingMessage({ chatId, text }) {
         state.pendingOrder,
       )
 
-      if (result.intent === 'delivery_pricing' && isDeliveryPricingRequest(text) && !isMidTemplateFlow) {
+      if (result.intent === 'delivery_pricing' && !isMidTemplateFlow) {
         await sendDeliveryPricingInfo(chatId)
         return
       }
@@ -483,6 +416,24 @@ async function handleIncomingMessage({ chatId, text }) {
         return
       }
 
+      // Primer mensaje de alguien que todavia no dio NADA util: se le manda el formato para que
+      // sepa como pedir. Se decide con lo que entendio la IA y no con palabras clave, asi una
+      // pregunta concreta (que la IA marca como "question") se responde en vez de recibir el
+      // formato y quedar cortada.
+      // Ojo con el "no dio nada": si mando su nombre o celular hay que dejarlo seguir al flujo
+      // normal aunque no haya elegido productos todavia, porque este atajo corta sin guardar el
+      // borrador y esos datos se perdian - despues el bot le volvia a pedir el nombre que ya
+      // habia dado.
+      const gaveSomethingUseful = Boolean(
+        result.items.length || result.customerName || result.customerPhone || result.fulfillmentType || result.deliveryAddress,
+      )
+      if (isFirstCustomerMessage && !gaveSomethingUseful && ['greeting', 'order_draft', 'other'].includes(result.intent)) {
+        const caption = buildOrderTemplateMessage()
+        conversations.add(chatId, 'bot', caption)
+        await whatsapp.sendImage(chatId, menuImagePath, caption)
+        return
+      }
+
       // Pregunta normal del negocio (horario, ubicacion, metodos de pago, etc.) que no trae
       // items nuevos: respondela directo, sin tocar el pedido en curso/pendiente. Si no hiciera
       // esta excepcion, un pedido pendiente "absorbe" la pregunta (como ya tiene items) y en vez
@@ -492,15 +443,25 @@ async function handleIncomingMessage({ chatId, text }) {
         // nombre en el mismo mensaje que hizo la pregunta) - solo evitamos volver a mostrar el
         // resumen del pedido en vez de contestar lo que realmente pregunto.
         if (!state.pendingOrder && (result.customerName || result.customerPhone || result.fulfillmentType || result.deliveryAddress)) {
-          const mergedResult = mergeOrderDraft(state.orderDraft || pendingOrderToDraft(state.pendingOrder), result, text, { itemsAreComplete: true })
+          const mergedResult = mergeOrderDraft(state.orderDraft || pendingOrderToDraft(state.pendingOrder), result, text)
           conversations.setOrderDraft(chatId, mergedResult)
         }
         conversations.add(chatId, 'bot', result.reply)
         await whatsapp.sendText(chatId, result.reply)
+        // Si ademas preguntaba donde quedamos, le mandamos el pin. Esto no intercepta el mensaje:
+        // la IA ya decidio que era una pregunta y ya la contesto, esto solo agrega la ubicacion.
+        if (isRestaurantLocationRequest(text)) {
+          await whatsapp.sendLocation(chatId, {
+            latitude: config.restaurantLatitude,
+            longitude: config.restaurantLongitude,
+            name: config.businessName,
+            address: config.restaurantAddress,
+          })
+        }
         return
       }
 
-      const mergedResult = mergeOrderDraft(state.orderDraft || pendingOrderToDraft(state.pendingOrder), result, text, { itemsAreComplete: true })
+      const mergedResult = mergeOrderDraft(state.orderDraft || pendingOrderToDraft(state.pendingOrder), result, text)
 
       // "Tiene algo que ver con armar un pedido?" - si es asi, guardamos el progreso (aunque sea
       // parcial, ej. solo el nombre) y seguimos pidiendo lo que falte, SIN reiniciar ni perder lo
@@ -558,16 +519,11 @@ async function handleIncomingMessage({ chatId, text }) {
       conversations.add(chatId, 'bot', result.reply)
       await whatsapp.sendText(chatId, result.reply)
     } catch (error) {
+      // Si algo falla no se vuelve a adivinar el pedido con expresiones regulares (eso registraba
+      // pedidos distintos de los que el cliente pidio). Se avisa a una persona y se le responde
+      // algo seguro segun donde quedo la conversacion.
       console.error('Error procesando mensaje:', error)
-      const recovered = await tryRecoverOrderFromText(chatId, text, state)
-      if (recovered.handled) {
-        if (recovered.reply) {
-          conversations.add(chatId, 'bot', recovered.reply)
-          await whatsapp.sendText(chatId, recovered.reply)
-        }
-        return
-      }
-
+      await notifyHumanSupport(chatId, text).catch(() => undefined)
       const reply = buildContextualRecoveryReply(state)
       conversations.add(chatId, 'bot', reply)
       await whatsapp.sendText(chatId, reply)
@@ -910,17 +866,6 @@ async function finalizeOrderDraft({ chatId, state, draft, catalog, text, aiReply
     return
   }
 
-  // Con papas o sin papas cambia el precio, asi que no se asume: se pregunta justo antes del
-  // resumen, cuando ya estan el resto de los datos.
-  if (needsPapasClarification(draft.items, catalog, state)) {
-    state.pendingClarification = 'papas'
-    conversations.scheduleSave()
-    const reply = buildPapasQuestion(draft.items, catalog)
-    conversations.add(chatId, 'bot', reply)
-    await whatsapp.sendText(chatId, reply)
-    return
-  }
-
   const orderInput = buildOrderInput({ result: draft, chatId })
   if (orderInput.fulfillmentType === 'delivery' && orderInput.deliveryQuoteStatus === 'missing_location') {
     const reply = 'Perfecto, ya tengo tu pedido. Para cotizar el envio necesito que me mandes tu ubicacion de WhatsApp, por favor.'
@@ -1083,19 +1028,60 @@ function getAllowedExtrasForProduct(product, catalog) {
   return allowed
 }
 
-// El catalogo manda, no la IA. Un extra que no existe para ese producto no puede llegar al
-// ticket: a un cliente que pidio "doble porcion de queso extra y una porcion de piña" le
-// registro "Sandwich de queso/huevo" x2 y "Salsa verde/picante" - productos de la categoria
-// "Extras", no extras de la hamburguesa. El prompt ya prohibia sustituir extras y aun asi paso,
-// asi que aca se verifica de verdad. Ademas se reescriben nombre y precio con los del catalogo,
-// que es lo que se cobra.
+// EL CATALOGO MANDA, NO LA IA. Este es el freno que hace seguro dejar que la IA interprete todo:
+// puede equivocarse en entender, pero no puede inventar un producto, un extra ni un precio. Todo
+// lo que no exista en el catalogo se descarta, y nombre y precio se reescriben con los del
+// catalogo, que es lo que realmente se cobra.
+function resolveCatalogProduct(item, catalog) {
+  const products = catalog?.products || []
+  const itemName = normalizeText(item.name)
+  return (
+    products.find((candidate) => candidate.id === item.productId) ||
+    products.find((candidate) => normalizeText(candidate.name) === itemName) ||
+    (itemName
+      ? products.find((candidate) => {
+          const candidateName = normalizeText(candidate.name)
+          return candidateName.includes(itemName) || itemName.includes(candidateName)
+        })
+      : null) ||
+    null
+  )
+}
+
+function enforceCatalogItems(items, catalog) {
+  const discarded = []
+
+  const cleaned = (items || [])
+    .map((item) => {
+      const product = resolveCatalogProduct(item, catalog)
+      if (!product) {
+        discarded.push(`producto "${item.name || item.productId}"`)
+        return null
+      }
+
+      const quantity = Math.max(1, Math.round(Number(item.quantity) || 1))
+      return {
+        ...item,
+        productId: product.id,
+        name: product.name,
+        basePrice: Number(product.price || 0),
+        quantity,
+      }
+    })
+    .filter(Boolean)
+
+  if (discarded.length) {
+    console.warn(`Descartado por no existir en el catalogo: ${discarded.join(', ')}`)
+  }
+
+  return enforceCatalogExtras(cleaned, catalog)
+}
+
 function enforceCatalogExtras(items, catalog) {
   const discarded = []
 
   const cleaned = (items || []).map((item) => {
-    const product =
-      (catalog?.products || []).find((candidate) => candidate.id === item.productId) ||
-      (catalog?.products || []).find((candidate) => normalizeText(candidate.name) === normalizeText(item.name))
+    const product = resolveCatalogProduct(item, catalog)
     if (!product) return item
 
     const allowed = getAllowedExtrasForProduct(product, catalog)
@@ -1141,84 +1127,24 @@ function sanitizeOrderItems(items) {
   })
 }
 
-function applyNotesToItems(items, text) {
-  const notesFromText = inferItemNoteFromText(String(text || '').toLowerCase())
-  if (!notesFromText || !items || !items.length) return items || []
-  return items.map((item) => {
-    const isBurger = item.productId?.includes('bbq') || item.productId?.includes('burger') || item.name?.toLowerCase().includes('burger') || item.name?.toLowerCase().includes('hamburguesa')
-    if (isBurger) {
-      const existing = item.note ? item.note.split(', ').map((n) => n.trim()) : []
-      const newNotes = notesFromText.split(', ').map((n) => n.trim())
-      const combined = Array.from(new Set([...existing, ...newNotes])).filter(Boolean).join(', ')
-      return { ...item, note: combined }
-    }
-    return item
-  })
-}
 
-function mergeOrderItems(prev, next, text) {
-  const isReset = isExplicitResetRequest(text)
-  const prevItems = prev || []
-  const nextItems = next || []
 
-  if (isReset || !prevItems.length) return applyNotesToItems(nextItems, text)
-  if (!nextItems.length) return applyNotesToItems(prevItems, text)
-
-  // Sumar cuando el cliente queria reemplazar es el error mas caro posible, asi que se exige una
-  // señal explicita de agregar. Antes alcanzaba con la palabra suelta "y", con "mas", o con que
-  // el mensaje trajera cualquier producto nuevo: "y sacale una hamburguesa, quiero solo una"
-  // subia el pedido de 2 a 3, y "cambia una coca por una fanta" dejaba 3 cocas en vez de 1.
-  // Un producto nuevo se agrega igual mas abajo; eso no es motivo para sumarle a los que ya estan.
-  const wantsReplacement =
-    /\b(cambia|cambiame|cambiale|mejor|solo|solamente|unicamente|en vez de|en lugar de|saca|sacame|sacale|quita|quitame|quitale|elimina|eliminar|borra|borrar|dejame|deja|corrige|corregir|que sean|que sea)\b/i.test(text)
-  // "una coca mas" tambien es agregar, pero "nada mas" / "algo mas?" no: ahi "mas" solo cierra la
-  // frase y tomarlo como agregar duplicaria productos que el cliente no pidio.
-  const mentionsMore = /\bmas\b/i.test(text) && !/\b(nada|no|algo|alguna cosa|que)\s+mas\b/i.test(text)
-  const wantsAddition =
-    /\b(agrega|agregame|agregale|anade|anademe|anadir|suma|sumale|sumame|tambien|ademas|aumenta|aumentame|otra|otro)\b/i.test(text) ||
-    mentionsMore
-  const isAddition = wantsAddition && !wantsReplacement
-
-  const merged = [...prevItems]
-  for (const newItem of nextItems) {
-    const existingIdx = merged.findIndex((i) => (i.productId && i.productId === newItem.productId) || (i.name && i.name.toLowerCase() === newItem.name?.toLowerCase()))
-    if (existingIdx >= 0) {
-      if (isAddition) {
-        merged[existingIdx] = {
-          ...merged[existingIdx],
-          quantity: merged[existingIdx].quantity + newItem.quantity,
-          note: newItem.note || merged[existingIdx].note,
-          extras: newItem.extras?.length ? newItem.extras : merged[existingIdx].extras,
-        }
-      } else {
-        merged[existingIdx] = { ...merged[existingIdx], ...newItem }
-      }
-    } else {
-      merged.push(newItem)
-    }
-  }
-
-  return applyNotesToItems(merged, text)
-}
-
-function mergeOrderDraft(previous, result, text, { itemsAreComplete = false } = {}) {
+function mergeOrderDraft(previous, result, text) {
   const inferred = inferFieldsFromText(text)
-  // Cuando el resultado ya viene con el pedido completo (ej. la IA vio el borrador actual y
-  // devolvio la lista final actualizada), no lo volvamos a combinar con lo anterior o se
-  // duplicarian cantidades. Si vino vacio, igual conservamos lo anterior como respaldo.
-  // Tampoco le aplicamos applyNotesToItems - la IA ya pone la nota (sin cebolla, sin salsa, etc)
-  // en su propia respuesta, y volver a agregarla por regex duplicaba el texto en la nota final.
-  // La IA rearma la lista de items en CADA respuesta, incluso cuando el mensaje del cliente no
-  // hablaba de comida, y a veces la devuelve cambiada. A un cliente real le convirtio
-  // "Tocino, Tocino" en "Salsa BBQ, Salsa BBQ" (y le bajo el total de Bs 30 a Bs 26) cuando lo
-  // unico que escribio fue que pagaria con QR. Un mensaje que no menciona productos ni pide un
-  // cambio no puede tocar lo que el cliente ya vio y aprobo.
+  // La IA siempre devuelve la lista COMPLETA del pedido (ve el borrador actual en el prompt), asi
+  // que reemplaza, nunca se suma a lo anterior: combinarlas duplicaba cantidades. Si vino vacia,
+  // se conserva lo que ya habia.
+  // El freno de keepPreviousItems sigue siendo necesario: la IA rearma la lista en CADA respuesta,
+  // incluso cuando el mensaje no hablaba de comida, y a veces la devuelve cambiada. A un cliente
+  // real le convirtio "Tocino, Tocino" en "Salsa BBQ, Salsa BBQ" (Bs 30 -> Bs 26) cuando lo unico
+  // que escribio fue que pagaria con QR. Un mensaje que no menciona productos ni pide un cambio
+  // no puede tocar lo que el cliente ya vio y aprobo.
   const keepPreviousItems = Boolean(previous?.items?.length) && !messageCanChangeItems(text)
   const mergedItems = keepPreviousItems
     ? previous.items
-    : itemsAreComplete
-      ? (result.items.length ? result.items : previous?.items || [])
-      : mergeOrderItems(previous?.items, result.items, text)
+    : result.items.length
+      ? result.items
+      : previous?.items || []
   const merged = {
     ...result,
     items: sanitizeOrderItems(mergedItems),
@@ -1320,10 +1246,6 @@ function isLikelyCustomerName(value) {
   if (/\b(hol+a+|buen(a|o)s?|dias?|tardes?|noches?|gracias|porfa(vor)?|disculp[ae]|permis[oa]|que\s*tal|alo|ola|chau|adios|si|no|ok|okay|listo|dale)\b/.test(normalized)) return false
   return true
 }
-function hasUsefulInferredFields(text) {
-  const inferred = inferFieldsFromText(text)
-  return Boolean(inferred.customerName || inferred.weakGuessedName || inferred.paymentMethod || inferred.fulfillmentType || inferred.deliveryAddress || inferred.customerPhone)
-}
 
 function buildEmptyAiResult() {
   return {
@@ -1339,325 +1261,38 @@ function buildEmptyAiResult() {
   }
 }
 
-function isSimpleEnoughForQuickPath(normalizedText) {
-  if (/\btriple\b/.test(normalizedText)) return false
-  // Si el cliente pregunta algo, va a la IA aunque el mismo mensaje traiga el pedido: pasa
-  // seguido que sean las dos cosas a la vez ("Una BBQ LAB simple con papa a nombre de Viviana.
-  // Tiene motito ? O mando a recoger ?"). El camino rapido solo saca datos por palabra clave: se
-  // quedaba con "recoger" como si el cliente ya hubiera elegido, y contestaba pidiendo el
-  // siguiente dato sin responder nunca lo que le preguntaron.
-  if (/\?/.test(normalizedText)) return false
-  const burgerFamilyMentions = (normalizedText.match(new RegExp(`\\b(?:${BURGER_FAMILY_SOURCE}|bbq|barbacoa)\\b`, 'g')) || []).length
-  if (burgerFamilyMentions > 1) return false
-  if (/\by\s+(otra|otro|una|un|1|2|3)\b/.test(normalizedText)) return false
-  // El parser rapido solo sabe AGREGAR productos por palabra clave - no entiende negaciones.
-  // "ya no quiero la coca, sacala" mencionaria "coca" y la agregaria de nuevo en vez de sacarla.
-  // Estos casos necesitan que la IA entienda la intencion real.
-  if (/\b(ya no quiero|no quiero|sin el|sin la|sacal[oa]|saquenla|saquenlo|quitar|quita el|quita la|elimina|eliminar|borra|borrar|cambia(lo|la)?\s+por|mejor\s+(que|sea))\b/.test(normalizedText)) return false
-  return true
-}
 
-function inferSimpleOrderFromCatalog(text, catalog) {
-  const normalized = normalizeText(text)
-  if (!isSimpleEnoughForQuickPath(normalized)) {
-    return { ...buildEmptyAiResult(), items: [] }
-  }
-  const flexibleItems = inferFlexibleMenuItems(normalized, catalog)
-  const products = [...(catalog.products || [])]
-    .filter((product) => product.isVisible !== false && product.isActive !== false)
-    .sort((left, right) => normalizeText(right.name).length - normalizeText(left.name).length)
-  const matched = [...flexibleItems]
 
-  for (const product of products) {
-    const productName = normalizeText(product.name)
-    if (!productName || !normalized.includes(productName)) continue
-    if (matched.some((item) => item.productId === product.id)) continue
-
-    const index = normalized.indexOf(productName)
-    const before = index > 0 ? normalized.slice(Math.max(0, index - 15), index) : ''
-    const isExplicitExtraPrefix = /\b(extra|adicional|mas)\s*$/.test(before)
-    const isAlreadyAnExtraOnItem = matched.some((item) => (item.extras || []).some((ex) => (ex.id && ex.id === product.id) || normalizeText(ex.name) === productName))
-
-    if (isExplicitExtraPrefix || isAlreadyAnExtraOnItem) {
-      continue
-    }
-
-    matched.push({
-      productId: product.id,
-      name: product.name,
-      basePrice: Number(product.price || 0),
-      quantity: inferQuantityBeforeProduct(normalized, productName),
-      note: inferItemNoteFromText(normalized),
-      options: [],
-      extras: inferExtrasFromText(normalized, product, catalog),
-    })
-  }
-
-  return {
-    ...buildEmptyAiResult(),
-    items: matched,
-  }
-}
-
-function inferFlexibleMenuItems(normalizedText, catalog) {
-  const matched = []
-
-  const addProduct = (productId, quantity = 1, note = inferItemNoteFromText(normalizedText)) => {
-    const product = findCatalogProduct(catalog, productId)
-    if (!product || matched.some((item) => item.productId === product.id)) return
-    matched.push({
-      productId: product.id,
-      name: product.name,
-      basePrice: Number(product.price || 0),
-      quantity,
-      note,
-      options: [],
-      extras: inferExtrasFromText(normalizedText, product, catalog),
-    })
-  }
-
-  const isBurgerSizeDoble = /\bdoble\b(?!\s*(porcion|porciones|racion|raciones))/.test(normalizedText)
-
-  if (/\b(bbq|barbacoa)\b/.test(normalizedText)) {
-    const size = isBurgerSizeDoble ? 'doble' : 'simple'
-    const papas = /\bsin\s+papas?\b/.test(normalizedText) ? 'sin-papas' : 'con-papas'
-    addProduct(`bbq-${size}-${papas}`, inferQuantityBeforeProduct(normalizedText, /\b(?:bbq|barbacoa)\b/))
-  }
-
-  if (burgerFamilyRegex().test(normalizedText) && !/\b(bbq|barbacoa)\b/.test(normalizedText)) {
-    const size = isBurgerSizeDoble ? 'doble' : 'simple'
-    const papas = /\bsin\s+papas?\b/.test(normalizedText) ? 'sin-papas' : 'con-papas'
-    addProduct(`burger-lab-${size}-${papas}`, inferQuantityBeforeProduct(normalizedText, burgerFamilyRegex()))
-  }
-
-  if (/\bcoca\b/.test(normalizedText)) {
-    addProduct(/\bzero\b/.test(normalizedText) ? 'coca-cola-zero-300-ml' : 'coca-cola-300-ml', inferQuantityBeforeProduct(normalizedText, 'coca'))
-  }
-
-  if (/\bsprite\b/.test(normalizedText)) addProduct('sprite-300-ml', inferQuantityBeforeProduct(normalizedText, 'sprite'))
-  if (/\bfanta\b/.test(normalizedText)) {
-    const id = /\bpapaya\b/.test(normalizedText)
-      ? 'fanta-papaya-300-ml'
-      : /\bguarana\b/.test(normalizedText)
-        ? 'fanta-guarana-300-ml'
-        : 'fanta-naranja-300-ml'
-    addProduct(id, inferQuantityBeforeProduct(normalizedText, 'fanta'))
-  }
-
-  if (/\bagua\b/.test(normalizedText)) addProduct('agua-vital-350-ml', inferQuantityBeforeProduct(normalizedText, 'agua'))
-  if (/\bmoco(?:chinchi|nchinchi|conchinchi)\b/.test(normalizedText)) {
-    addProduct(/\b(2\s*l|2l|dos\s+litros?)\b/.test(normalizedText) ? 'pulpa-de-moconchinchi-2-litros' : 'pulpa-de-moconchinchi-330-ml', inferQuantityBeforeProduct(normalizedText, 'moco'))
-  }
-  if (/\btamarindo\b/.test(normalizedText)) {
-    addProduct(/\b(2\s*l|2l|dos\s+litros?)\b/.test(normalizedText) ? 'tamarindo-2-litros' : 'tamarindo-330-ml', inferQuantityBeforeProduct(normalizedText, 'tamarindo'))
-  }
-  if (/\bjamaica\b/.test(normalizedText)) {
-    addProduct(/\b(2\s*l|2l|dos\s+litros?)\b/.test(normalizedText) ? 'flor-de-jamaica-2-litros' : 'flor-de-jamaica-330-ml', inferQuantityBeforeProduct(normalizedText, 'jamaica'))
-  }
-
-  return matched
-}
 
 function findCatalogProduct(catalog, productId) {
   return (catalog.products || []).find((product) => product.id === productId && product.isVisible !== false && product.isActive !== false)
 }
 
-function inferQuantityBeforeProduct(normalizedText, productNeedle) {
-  // El "needle" puede ser texto o expresion regular. Con texto fijo, un producto que se escribe
-  // de varias formas (burger/burguer/hamburguesa) no se encontraba, y como "no encontrado" y
-  // "sin cantidad delante" daban el mismo resultado, la cantidad se perdia en silencio.
-  const index =
-    typeof productNeedle === 'string' ? normalizedText.indexOf(productNeedle) : normalizedText.search(productNeedle)
-  const before = index > 0 ? normalizedText.slice(Math.max(0, index - 30), index) : ''
-  const digitMatch = before.match(/\b([2-9])\s*(x|de|porcion|porciones|orden|ordenes|paquete|paquetes)?\s*(de)?\s*$/i)
-  if (digitMatch) return Number(digitMatch[1])
-  if (/\b(doble|dos)\s*(x|de|porcion|porciones|orden|ordenes|paquete|paquetes)?\s*(de)?\s*$/i.test(before)) return 2
-  if (/\b(triple|tres)\s*(x|de|porcion|porciones|orden|ordenes|paquete|paquetes)?\s*(de)?\s*$/i.test(before)) return 3
-  return 1
-}
 
-function inferItemNoteFromText(normalizedText) {
-  const notes = []
-  const checks = [
-    ['sin mantequilla', /\bsin mantequilla\b/],
-    ['sin salsa', /\bsin salsa\b/],
-    ['sin salsa de la casa', /\bsin salsa de la casa\b/],
-    ['sin salsa bbq', /\bsin (salsa )?bbq\b/],
-    ['sin cebolla', /\bsin cebolla\b/],
-    ['sin queso', /\bsin queso\b/],
-    ['salsa aparte', /\bsalsa aparte\b/],
-    ['doble llajua', /\b(doble|extra)\s+(llajua|salsa picante)\b/],
-    ['llajua', /\b(llajua|salsa picante|picante)\b/],
-  ]
 
-  for (const [label, pattern] of checks) {
-    if (pattern.test(normalizedText) && !notes.includes(label)) notes.push(label)
-  }
 
-  return notes.join(', ')
-}
-
-function inferExtrasFromText(normalizedText, product, catalog) {
-  const availableExtras = [...(Array.isArray(product.extras) ? product.extras : [])]
-  if (product.categoryId === 'hamburguesas' && Array.isArray(catalog?.quickExtras)) {
-    for (const quickExtra of catalog.quickExtras) {
-      if (!availableExtras.some((extra) => extra.id === quickExtra.id)) {
-        availableExtras.push(quickExtra)
-      }
-    }
-  }
-
-  const extras = []
-  for (const extra of availableExtras) {
-    const extraName = normalizeText(extra.name)
-    if (!extraName) continue
-    const coreKey = extraName.replace(/\b(extra|adicional|mas)\b/gi, '').trim()
-
-    const nameRegex = new RegExp(`\\b${extraName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i')
-    const coreRegex = coreKey.length >= 3 ? new RegExp(`\\b${coreKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i') : null
-
-    const isMatched = nameRegex.test(normalizedText) || (coreRegex && coreRegex.test(normalizedText))
-    if (!isMatched) continue
-
-    const quantity = inferExtraQuantity(normalizedText, coreKey || extraName)
-    for (let i = 0; i < quantity; i += 1) extras.push(extra)
-  }
-
-  return extras
-}
-
-function inferExtraQuantity(normalizedText, normalizedExtraName) {
-  const index = normalizedText.indexOf(normalizedExtraName)
-  const before = index > 0 ? normalizedText.slice(Math.max(0, index - 35), index) : ''
-  const connector = '(x|de|porcion|porciones|racion|raciones|extra|extras|adicional|adicionales)?\\s*(de)?'
-
-  const digitMatch = before.match(new RegExp(`\\b([2-9])\\s*${connector}\\s*$`))
-  if (digitMatch) return Number(digitMatch[1])
-
-  if (new RegExp(`\\b(doble|dos)\\s*${connector}\\s*$`).test(before)) return 2
-  if (new RegExp(`\\b(triple|tres)\\s*${connector}\\s*$`).test(before)) return 3
-
-  return 1
-}
 
 // --- Papas: nunca asumir, porque cambia el precio (BBQ Simple: Bs 23 con papas, Bs 20 sin) ---
 
-const SPANISH_NUMBER_WORDS = { un: 1, una: 1, uno: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5, seis: 6 }
 
-// Los ids del catalogo siguen el patron "...-con-papas" / "...-sin-papas", asi que la otra
-// version del mismo producto se encuentra cambiando esa parte del id.
-function getPapasSibling(catalog, productId) {
-  if (!productId) return null
-  if (productId.includes('-con-papas')) return findCatalogProduct(catalog, productId.replace('-con-papas', '-sin-papas'))
-  if (productId.includes('-sin-papas')) return findCatalogProduct(catalog, productId.replace('-sin-papas', '-con-papas'))
-  return null
-}
 
-function customerSpecifiedPapas(state) {
-  return (state?.messages || []).some(
-    (entry) => entry.role === 'cliente' && /\b(con|sin)\s+papas?\b/.test(normalizeText(entry.text)),
-  )
-}
 
-function needsPapasClarification(items, catalog, state) {
-  if (customerSpecifiedPapas(state)) return false
-  return (items || []).some((item) => getPapasSibling(catalog, item.productId))
-}
 
-function buildPapasQuestion(items, catalog) {
-  const ambiguous = (items || []).filter((item) => getPapasSibling(catalog, item.productId))
-  const total = ambiguous.reduce((sum, item) => sum + (Number(item.quantity) || 1), 0)
-  if (total > 1) {
-    return `¿Las ${total} hamburguesas las quieres *con papas* o *sin papas*? Si quieres unas de cada una, dime cuántas (por ejemplo: "una con papas").`
-  }
-  return '¿La hamburguesa la quieres *con papas* o *sin papas*?'
-}
+// Regla del dueño: si el cliente no escribe "sin papas", la hamburguesa va CON papas. Es la
+// version que mas se pide y evita tener que preguntar en cada pedido. Solo un "sin papas"
+// explicito cambia el producto. Ademas esto tapa un error real: la IA entendio "que una sea sin
+// cebolla" como "sin papas" y le cambio la hamburguesa de Bs 22 a Bs 19 - una nota nunca puede
+// cambiar el producto.
+function enforcePapasRule(previousItems, items, text, catalog) {
+  if (/\bsin\s+papas?\b/.test(normalizeText(text))) return items
 
-// Interpreta la respuesta contando cuantas van de cada tipo. El dueño lo pidio explicito: si
-// pidio dos y contesta "una con papas", la otra queda sin papas.
-function parsePapasAnswer(text, totalUnits) {
-  const normalized = normalizeText(text)
-  const regex = /(\d+|un|una|uno|dos|tres|cuatro|cinco|seis|todas|todos|ambas|ambos|ninguna|ninguno)?\s*(con|sin)\s+papas?/g
-  const counts = { con: null, sin: null }
-  let found = false
-  let match
-
-  while ((match = regex.exec(normalized)) !== null) {
-    found = true
-    const rawCount = match[1]
-    const choice = match[2]
-    if (!rawCount || /^(todas|todos|ambas|ambos)$/.test(rawCount)) {
-      counts[choice] = totalUnits
-    } else if (/^(ninguna|ninguno)$/.test(rawCount)) {
-      counts[choice] = 0
-    } else if (/^\d+$/.test(rawCount)) {
-      counts[choice] = Number(rawCount)
-    } else {
-      counts[choice] = SPANISH_NUMBER_WORDS[rawCount] ?? totalUnits
-    }
-  }
-
-  if (!found) return null
-
-  // Lo que no se menciono es el resto: "una con papas" de dos hamburguesas deja una sin papas.
-  if (counts.con === null) counts.con = Math.max(0, totalUnits - (counts.sin ?? 0))
-  if (counts.sin === null) counts.sin = Math.max(0, totalUnits - counts.con)
-
-  return { con: Math.min(counts.con, totalUnits), sin: Math.min(counts.sin, totalUnits) }
-}
-
-// Reparte las unidades ambiguas entre la version con papas y la sin papas, y las reagrupa en
-// lineas. Los dos productos tienen ids distintos, asi que quedan como dos lineas separadas y la
-// cocina ve exactamente cuantas van de cada una.
-function applyPapasAnswer(items, catalog, answerText) {
-  const ambiguous = (items || []).filter((item) => getPapasSibling(catalog, item.productId))
-  if (!ambiguous.length) return items
-
-  const totalUnits = ambiguous.reduce((sum, item) => sum + (Number(item.quantity) || 1), 0)
-  const plan = parsePapasAnswer(answerText, totalUnits)
-  if (!plan) return items
-
-  let remainingCon = plan.con
-  const result = []
-
-  for (const item of items || []) {
-    if (!getPapasSibling(catalog, item.productId)) {
-      result.push(item)
-      continue
-    }
-
-    const quantity = Number(item.quantity) || 1
-    const conUnits = Math.max(0, Math.min(remainingCon, quantity))
-    const sinUnits = quantity - conUnits
-    remainingCon -= conUnits
-
-    const conProduct = item.productId.includes('-con-papas') ? null : getPapasSibling(catalog, item.productId)
-    const sinProduct = item.productId.includes('-sin-papas') ? null : getPapasSibling(catalog, item.productId)
-    const asCon = conProduct ? { productId: conProduct.id, name: conProduct.name, basePrice: Number(conProduct.price || 0) } : {}
-    const asSin = sinProduct ? { productId: sinProduct.id, name: sinProduct.name, basePrice: Number(sinProduct.price || 0) } : {}
-
-    // Los extras quedan en la linea con papas si existe; si no, en la otra. Asi no se duplican.
-    if (conUnits > 0) result.push({ ...item, ...asCon, quantity: conUnits })
-    if (sinUnits > 0) result.push({ ...item, ...asSin, quantity: sinUnits, extras: conUnits > 0 ? [] : item.extras })
-  }
-
-  return result
-}
-
-// "sin cebolla" es una NOTA del item, no otro producto. La IA lo confundio con "sin papas" y le
-// cambio a un cliente una hamburguesa Con Papas (Bs 22) por una Sin Papas (Bs 19) cuando lo unico
-// que pidio fue que una fuera sin cebolla. Si el mensaje no habla de papas, la version del
-// producto que el cliente ya tenia no se toca.
-function keepPapasVariant(previousItems, nextItems, text, catalog) {
-  if (/\bpapas?\b/.test(normalizeText(text))) return nextItems
-  if (!previousItems?.length) return nextItems
-
-  return (nextItems || []).map((item) => {
-    const sibling = getPapasSibling(catalog, item.productId)
-    if (!sibling) return item
-    if (previousItems.some((previous) => previous.productId === item.productId)) return item
-    if (!previousItems.some((previous) => previous.productId === sibling.id)) return item
-    return { ...item, productId: sibling.id, name: sibling.name, basePrice: Number(sibling.price || 0) }
+  return (items || []).map((item) => {
+    if (!item.productId?.includes('-sin-papas')) return item
+    // Si ya lo tenia asi de antes, el cliente lo pidio sin papas en otro mensaje: se respeta.
+    if ((previousItems || []).some((previous) => previous.productId === item.productId)) return item
+    const conPapas = findCatalogProduct(catalog, item.productId.replace('-sin-papas', '-con-papas'))
+    if (!conPapas) return item
+    return { ...item, productId: conPapas.id, name: conPapas.name, basePrice: Number(conPapas.price || 0) }
   })
 }
 
@@ -1777,27 +1412,6 @@ function buildContextualRecoveryReply(state) {
   return ORDER_FORMAT_REDIRECT_MESSAGE
 }
 
-async function tryRecoverOrderFromText(chatId, text, state) {
-  try {
-    const catalog = await getCatalogForParsing()
-    const fallbackResult = mergeOrderDraft(
-      state.orderDraft || pendingOrderToDraft(state.pendingOrder),
-      inferSimpleOrderFromCatalog(text, catalog),
-      text,
-    )
-
-    if (!fallbackResult.items.length) return { handled: false, reply: '' }
-
-    conversations.setOrderDraft(chatId, fallbackResult)
-    // Mismo cierre que el flujo normal, para que este camino de recuperacion no se saltee la
-    // pregunta de las papas y termine asumiendo la opcion mas cara.
-    await finalizeOrderDraft({ chatId, state, draft: fallbackResult, catalog, text })
-    return { handled: true, reply: '' }
-  } catch (fallbackError) {
-    console.error('No se pudo recuperar pedido localmente:', fallbackError)
-    return { handled: false, reply: '' }
-  }
-}
 
 // Inverso de buildOrderInput: una vez que el pedido pasa a "pendingOrder" (ya se mostro el
 // resumen y se espera "Confirmas?"), el orderDraft se limpia. Sin esto, si el cliente manda una
@@ -1904,14 +1518,6 @@ function phoneToChatId(phone) {
   return `${digits}@s.whatsapp.net`
 }
 
-function isMenuRequest(text) {
-  const normalized = text
-    .normalize('NFD')
-    .replace(/\p{Diacritic}/gu, '')
-    .toLowerCase()
-
-  return /\b(menu|carta|catalogo|promos|promociones)\b/.test(normalized)
-}
 
 function looksLikeStructuredOrderMessage(text) {
   const inferred = inferFieldsFromText(text)
@@ -1980,21 +1586,6 @@ function isPayOnArrivalText(text) {
   )
 }
 
-// Pregunta concreta sobre otra cosa que no es hacer un pedido (horarios, envio, ubicacion, como
-// pagar). Solo en ese caso se responde eso en vez de mandar el formato. Un saludo suelto o un
-// "quiero 2 hamburguesas" NO entran aca: esos van derecho al formato.
-function isSpecificNonOrderQuestion(text) {
-  const normalized = normalizeText(text)
-  if (isOrderStartRequest(text) || looksLikeConcreteOrderText(text) || looksLikeStructuredOrderMessage(text)) {
-    return false
-  }
-  return (
-    isDeliveryPricingRequest(text) ||
-    isPaymentQrRequest(text) ||
-    isRestaurantLocationRequest(text) ||
-    /\b(horario|horarios|abren|abierto|cierran|cerrado|a que hora|hasta que hora|donde estan|donde queda|ubicacion|direccion|telefono|reclamo|factura)\b/.test(normalized)
-  )
-}
 
 // El cliente nombro hamburguesas pero sin decir cuales ("quiero 2 hamburguesas"). No alcanza
 // para armar el pedido: hay que preguntarle cuales quiere, con las opciones a la vista.

@@ -20,6 +20,8 @@ const numberOrDefault = (fallback) =>
 const orderSchema = z.object({
   intent: z.enum(['greeting', 'question', 'menu_request', 'order_draft', 'order_ready', 'confirm_order', 'cancel_order', 'delivery_pricing', 'payment_qr_request', 'human_help', 'other']),
   reply: z.string(),
+  // La IA avisa cuando prefiere que conteste una persona en vez de arriesgar una respuesta mala.
+  needsHuman: z.boolean().default(false),
   missingFields: z.array(z.string()).default([]),
   customerName: z.string().default(''),
   customerPhone: z.string().default(''),
@@ -45,6 +47,7 @@ function buildEmptyAiResult() {
   return {
     intent: 'order_draft',
     reply: '',
+    needsHuman: false,
     missingFields: [],
     customerName: '',
     customerPhone: '',
@@ -114,7 +117,9 @@ async function generateOpenAi(prompt) {
     },
     body: JSON.stringify({
       model: config.openaiModel,
-      temperature: 0.25,
+      // Extraer un pedido no es una tarea creativa: con temperatura alta el MISMO mensaje a veces
+      // devolvia los productos y a veces ninguno. En 0 la respuesta es estable.
+      temperature: 0,
       response_format: { type: 'json_object' },
       messages: [
         {
@@ -232,6 +237,12 @@ Objetivo:
 - Un extra SIEMPRE sale de la lista "Extras/Adicionales disponibles" de ESE producto, y su id tiene que ser uno de los "id=" de esa misma lista. NUNCA uses el id ni el nombre de un producto del catálogo como si fuera un extra, aunque el producto esté en la categoría "extras" y su nombre se parezca (ej. si el cliente pide "queso extra", el extra correcto es "Queso" de la lista de adicionales, NO el producto "Sandwich de queso/huevo"; si pide "piña", es el adicional "Piña", NO el producto "Salsa verde/picante").
 - Si el cliente pide un adicional que no está en la lista de ese producto, no lo reemplaces por otro parecido: dejalo fuera y avisale en "reply" que ese adicional no está disponible.
 - "sin cebolla", "sin salsa", "sin queso", "sin mantequilla" son NOTAS del item (van en "note") y NUNCA cambian el producto elegido. Solo "sin papas" corresponde a otro producto (la versión Sin Papas). Ej: si el cliente tiene "Burger Lab Simple Con Papas" y dice "que una sea sin cebolla", el producto sigue siendo Con Papas y solo se le agrega la nota.
+- REGLAS DEL NEGOCIO (obligatorias):
+  1. NO se toman pedidos para comer en el restaurante por WhatsApp. Si el cliente dice que es "para comer aquí", "para el local", "para comer en el restaurante" o similar, usá intent "question" y explicale amablemente que los pedidos para comer en el restaurante se hacen directamente en caja, y que por WhatsApp solo tomamos para recoger o delivery.
+  2. Marca de la hamburguesa. Hay solo dos: BURGER LAB y BBQ (las dos existen en el catálogo, nunca digas que no tenemos una). Si el cliente escribe "bbq", "bbk", "bbc", "bbq lab", "barbacoa", "barbakoa", "la de barbacoa" o cualquier variante parecida, es la BBQ (los productos que empiezan con "BBQ" en el catálogo). Si NO menciona ninguna marca (ej. "una simple con papas", "2 dobles"), asumí BURGER LAB.
+  3. Si NO aclara papas, asumí SIEMPRE la versión CON PAPAS. Solo si el cliente escribe explícitamente "sin papas" / "sin papa" usás la versión Sin Papas. Nunca preguntes por las papas.
+  4. Los nombres se escriben de muchas formas ("burguer", "burguerlab", "burguesa", "hamburguesa", "koka kola", "doblez"). Interpretá la intención, no la ortografía.
+- Si de verdad no entendés lo que el cliente quiere, o pide algo que no está en el menú y no sabés cómo resolverlo, poné "needsHuman": true y dejá "reply" vacío. Es preferible que conteste una persona antes que responder cualquier cosa. No uses needsHuman para preguntas normales que sí podés contestar.
 - SÍ hacemos delivery con motos propias. Si preguntan "¿tienen delivery?", "¿tiene motito?", "¿me lo pueden traer?" o "¿mando a recoger?", respondé claramente que sí, que tenemos motos para enviárselo, y que si prefiere también puede pasar a recoger por el local. Aclarale que el costo del envío se cotiza aparte y lo paga directamente al delivery.
 - Cuando el cliente pregunta algo, en "reply" respondé SOLO esa pregunta, en una o dos frases. NO le pidas los datos que falten ni repitas el formato del pedido: de eso se encarga el sistema aparte, y si vos también lo pedís el cliente recibe lo mismo dos veces en el mismo mensaje.
 - PAGOS. Si el pedido es DELIVERY: nunca se cobra por el chat ni se envía QR. El cliente paga el total directamente a la moto al recibir (efectivo o QR) y el envío se cotiza aparte, también con el delivery. Si pide pagar por QR, explicale eso mismo. Si es RECOJO: no menciones el método de pago hasta que confirme el pedido; recién ahí se le pregunta si paga con QR ahora o directo en el restaurante.
@@ -255,6 +266,8 @@ Metodo de pago: ${currentDraft.paymentMethod === 'qr' ? 'QR' : 'Efectivo (por de
 Entrega: ${currentDraft.fulfillmentType || '(sin definir)'}
 Items:
 ${currentDraft.items.map((item) => `- ${item.quantity} x ${item.name}${item.extras?.length ? ` + ${item.extras.map((e) => e.name).join(', ')}` : ''}${item.note ? ` (${item.note})` : ''}`).join('\n')}
+
+MUY IMPORTANTE: en "items" devolvé SIEMPRE el pedido COMPLETO tal como queda después del mensaje nuevo, incluyendo los productos que NO cambiaron. La lista que devuelvas reemplaza por completo a la de arriba. Si el cliente tiene 2 hamburguesas y 2 cocas, y dice "cambia una coca por una fanta", tenés que devolver las 2 hamburguesas + 1 coca + 1 fanta (los cuatro renglones), NO solo la fanta. Si devolvés menos, esos productos se pierden del pedido.
 ` : ''}
 Conversacion resumida:
 ${conversation.map((entry) => `${entry.role}: ${entry.text}`).join('\n')}
@@ -266,6 +279,7 @@ Devuelve SOLO JSON con esta forma:
 {
   "intent": "greeting|question|order_draft|order_ready|confirm_order|cancel_order|delivery_pricing|payment_qr_request|human_help|other",
   "reply": "respuesta para WhatsApp",
+  "needsHuman": false,
   "missingFields": ["Nombre", "Metodo de pago"],
   "customerName": "",
   "customerPhone": "",
