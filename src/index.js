@@ -729,7 +729,22 @@ if (!TEST_MODE) {
     startConfirmationNoticePolling()
   }
 
+  // El servidor de Railway corre en UTC y el restaurante esta en Bolivia. Dejar esto escrito al
+  // arrancar hace que el desfase se vea de una: ya paso que pedidos hechos despues de las 20:00
+  // de Bolivia se guardaran en el dia siguiente y nadie los viera en caja.
   const server = app.listen(config.port, () => {
+    const settings = getSettings()
+    const ahora = new Date()
+    const horaLocalRestaurante = new Intl.DateTimeFormat('es-BO', {
+      dateStyle: 'short',
+      timeStyle: 'short',
+      timeZone: config.timezone,
+    }).format(ahora)
+    const openHour = typeof settings.openHour === 'number' ? settings.openHour : config.openHour
+    const closeHour = typeof settings.closeHour === 'number' ? settings.closeHour : config.closeHour
+    console.log(`Zona horaria del restaurante: ${config.timezone}`)
+    console.log(`Hora del servidor: ${ahora.toISOString()} | Hora en el restaurante: ${horaLocalRestaurante}`)
+    console.log(`Horario de atencion: ${openHour}:00 a ${closeHour}:00 (hora del restaurante). Ahora mismo: ${isWithinBusinessHours() ? 'ABIERTO' : 'CERRADO'}`)
     console.log(`Bot API escuchando en http://localhost:${config.port}`)
   })
 
