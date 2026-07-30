@@ -4,7 +4,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { config, assertRequiredConfig } from './config.js'
 import { ConversationStore } from './state.js'
-import { getSettings, loadSettings, updateSettings } from './settings.js'
+import { getSettings, loadSettings, registerSalesReset, updateSettings } from './settings.js'
 import {
   getCatalog,
   createWhatsappOrder,
@@ -14,6 +14,7 @@ import {
   markWhatsappConfirmationSent,
   markWhatsappDispatchSent,
   testFirestoreWrite,
+  resetSalesData,
 } from './firebase.js'
 import { understandMessage } from './gemini.js'
 import { WhatsappClient } from './whatsapp.js'
@@ -614,6 +615,53 @@ app.post('/settings', requireToken, async (req, res) => {
   const settings = await updateSettings(req.body || {})
   acceptingOrders = settings.acceptingOrders
   res.json({ ok: true, settings })
+})
+
+const MAX_BORRADOS_DE_VENTAS = 2
+
+/**
+ * Borra TODAS las ventas para entregar el sistema limpio despues de las pruebas.
+ *
+ * Limitado a dos usos: uno para probar y otro para la entrega final. El contador vive en los
+ * ajustes del bot y no se puede modificar desde afuera, asi que no alcanza con borrar datos del
+ * navegador para reiniciarlo.
+ *
+ * Solo toca pedidos y documentos de dia. El catalogo, los usuarios y la configuracion del bot
+ * quedan intactos.
+ */
+app.post('/admin/reset-sales', requireToken, async (_req, res) => {
+  const usados = Number(getSettings().salesResetsUsed || 0)
+
+  if (usados >= MAX_BORRADOS_DE_VENTAS) {
+    res.status(409).json({
+      ok: false,
+      error: `Ya se uso las ${MAX_BORRADOS_DE_VENTAS} veces permitidas. No quedan usos disponibles.`,
+      usados,
+      restantes: 0,
+    })
+    return
+  }
+
+  try {
+    const resultado = await resetSalesData()
+    const nuevosUsados = await registerSalesReset()
+    console.log(`Ventas borradas: ${resultado.pedidosBorrados} pedidos en ${resultado.diasBorrados} dias. Usos: ${nuevosUsados}/${MAX_BORRADOS_DE_VENTAS}`)
+    res.json({
+      ok: true,
+      ...resultado,
+      usados: nuevosUsados,
+      restantes: Math.max(0, MAX_BORRADOS_DE_VENTAS - nuevosUsados),
+    })
+  } catch (error) {
+    console.error('No se pudo borrar el historial de ventas:', error)
+    res.status(500).json({ ok: false, error: 'No se pudo borrar el historial de ventas.' })
+  }
+})
+
+/** Cuantos borrados de ventas quedan, para mostrarlo en el boton de administracion. */
+app.get('/admin/reset-sales/status', requireToken, (_req, res) => {
+  const usados = Number(getSettings().salesResetsUsed || 0)
+  res.json({ usados, restantes: Math.max(0, MAX_BORRADOS_DE_VENTAS - usados), maximo: MAX_BORRADOS_DE_VENTAS })
 })
 
 app.get('/whatsapp/groups', requireToken, async (_req, res) => {

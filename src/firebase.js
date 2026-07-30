@@ -334,3 +334,41 @@ function getFirebaseCredential() {
 
   return admin.credential.cert(serviceAccount)
 }
+
+/**
+ * Borra TODAS las ventas: pedidos y documentos de dia (con sus contadores).
+ *
+ * Sirve para entregar el sistema limpio despues de las pruebas, sin que queden pedidos falsos
+ * inflando el historial, los totales del dia/semana/mes ni el conteo de insumos (pan, carne),
+ * que se calculan a partir de los pedidos.
+ *
+ * NO toca el catalogo, los usuarios ni la configuracion del bot: solo el historial de ventas.
+ *
+ * Va aca y no en el comandero porque las reglas de seguridad prohiben borrar los documentos de
+ * dia desde el navegador ("allow delete: if false"). El bot usa credenciales de administrador y
+ * si puede, asi no hay que aflojar esas reglas.
+ */
+export async function resetSalesData() {
+  const daysRef = db.collection('restaurants').doc(config.restaurantId).collection('days')
+  const daysSnap = await daysRef.get()
+
+  let pedidosBorrados = 0
+  let diasBorrados = 0
+
+  for (const dayDoc of daysSnap.docs) {
+    const ordersSnap = await dayDoc.ref.collection('orders').get()
+
+    // En lotes, que es como Firestore espera los borrados masivos.
+    for (let i = 0; i < ordersSnap.docs.length; i += 400) {
+      const batch = db.batch()
+      ordersSnap.docs.slice(i, i + 400).forEach((orderDoc) => batch.delete(orderDoc.ref))
+      await batch.commit()
+    }
+
+    pedidosBorrados += ordersSnap.size
+    await dayDoc.ref.delete()
+    diasBorrados += 1
+  }
+
+  return { pedidosBorrados, diasBorrados }
+}

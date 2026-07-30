@@ -5,6 +5,10 @@ import { config } from './config.js'
 const settingsPath = config.settingsPath
 
 export const defaultSettings = {
+  // Cuantas veces se uso el borrado de ventas. El limite es 2: una para probar el sistema y
+  // otra para entregarlo limpio. Se guarda aca (no en el navegador) para que no se pueda
+  // reiniciar borrando datos del navegador.
+  salesResetsUsed: 0,
   openHour: 17,
   closeHour: 23,
   acceptingOrders: true,
@@ -52,6 +56,13 @@ export async function updateSettings(patch) {
   return currentSettings
 }
 
+/** Suma un uso al borrado de ventas. Es el unico camino para modificar ese contador. */
+export async function registerSalesReset() {
+  currentSettings = { ...currentSettings, salesResetsUsed: Number(currentSettings.salesResetsUsed || 0) + 1 }
+  await saveSettings(currentSettings)
+  return currentSettings.salesResetsUsed
+}
+
 async function saveSettings(settings) {
   await fs.mkdir(path.dirname(settingsPath), { recursive: true })
   await fs.writeFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, 'utf8')
@@ -73,6 +84,9 @@ function normalizeSettings(value) {
 function pickAllowedSettings(value) {
   const allowed = {}
   for (const key of Object.keys(defaultSettings)) {
+    // El contador de borrados NO se puede tocar desde afuera: si se pudiera, alcanzaria con
+    // mandarlo en cero para saltarse el limite de dos usos.
+    if (key === 'salesResetsUsed') continue
     if (Object.prototype.hasOwnProperty.call(value, key)) {
       allowed[key] = value[key]
     }
