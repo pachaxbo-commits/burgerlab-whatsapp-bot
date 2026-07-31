@@ -11,6 +11,13 @@ if (!admin.apps.length) {
 
 const db = admin.firestore()
 const FieldValue = admin.firestore.FieldValue
+const MAX_VISIBLE_ORDER_NUMBER = 50
+
+function formatOrderNumber(sequence) {
+  const safeSequence = Math.max(1, Math.trunc(sequence))
+  const visibleNumber = ((safeSequence - 1) % MAX_VISIBLE_ORDER_NUMBER) + 1
+  return `#${String(visibleNumber).padStart(3, '0')}`
+}
 
 export async function getCatalog() {
   const basePath = db
@@ -49,7 +56,7 @@ export async function createWhatsappOrder(input) {
   const result = await db.runTransaction(async (transaction) => {
     const daySnap = await transaction.get(dayRef)
     const nextSequence = daySnap.exists ? Number(daySnap.data().sequence || 0) + 1 : 1
-    const displayNumber = `#${String(nextSequence).padStart(3, '0')}`
+    const displayNumber = formatOrderNumber(nextSequence)
     const now = FieldValue.serverTimestamp()
 
     if (daySnap.exists) {
