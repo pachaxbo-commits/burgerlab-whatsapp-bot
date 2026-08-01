@@ -13,8 +13,9 @@ import { config } from './config.js'
 
 const logger = pino({ level: 'silent' })
 
-const PROCESSED_MESSAGE_TTL_MS = 10 * 60 * 1000
-const PROCESSED_MESSAGE_MAX = 500
+const PROCESSED_MESSAGE_TTL_MS = 24 * 60 * 60 * 1000
+const PROCESSED_MESSAGE_MAX = 5000
+const MAX_INCOMING_MESSAGE_AGE_MS = 15 * 60 * 1000
 
 export class WhatsappClient {
   constructor({ onMessage, testMode = false }) {
@@ -22,6 +23,8 @@ export class WhatsappClient {
     this.sock = null
     this.connected = false
     this.processedMessageIds = new Map()
+    this.processedMessagesLoaded = false
+    this.processedMessageSaveTimer = null
     this.testMode = testMode
     this.consecutiveDisconnects = 0
   }
@@ -44,10 +47,51 @@ export class WhatsappClient {
       const oldestKey = this.processedMessageIds.keys().next().value
       this.processedMessageIds.delete(oldestKey)
     }
+    this.scheduleProcessedMessagesSave()
     return false
   }
 
+  async loadProcessedMessageIds() {
+    if (this.processedMessagesLoaded || this.testMode) return
+    this.processedMessagesLoaded = true
+
+    try {
+      const raw = await fs.readFile(config.processedMessagesPath, 'utf8')
+      const entries = JSON.parse(raw)
+      const now = Date.now()
+      this.processedMessageIds = new Map(
+        (Array.isArray(entries) ? entries : [])
+          .filter(([id, seenAt]) => id && Number.isFinite(Number(seenAt)) && now - Number(seenAt) <= PROCESSED_MESSAGE_TTL_MS)
+          .slice(-PROCESSED_MESSAGE_MAX)
+          .map(([id, seenAt]) => [String(id), Number(seenAt)]),
+      )
+    } catch {
+      this.processedMessageIds = new Map()
+    }
+  }
+
+  scheduleProcessedMessagesSave() {
+    if (this.testMode) return
+    if (this.processedMessageSaveTimer) clearTimeout(this.processedMessageSaveTimer)
+    this.processedMessageSaveTimer = setTimeout(() => {
+      this.processedMessageSaveTimer = null
+      this.saveProcessedMessageIds().catch((error) => {
+        console.error('No se pudo guardar la deduplicacion de mensajes:', error)
+      })
+    }, 150)
+  }
+
+  async saveProcessedMessageIds() {
+    await fs.mkdir(config.dataDir, { recursive: true })
+    await fs.writeFile(
+      config.processedMessagesPath,
+      `${JSON.stringify(Array.from(this.processedMessageIds.entries()))}\n`,
+      'utf8',
+    )
+  }
+
   async start() {
+    await this.loadProcessedMessageIds()
     const { state, saveCreds } = await useMultiFileAuthState(config.authDir)
     const version = await resolveWaWebVersion()
 
@@ -155,6 +199,10 @@ export class WhatsappClient {
     for (const message of event.messages) {
       if (message.key.fromMe) continue
       if (this.hasAlreadyProcessed(message.key.id)) continue
+      if (isStaleIncomingMessage(message)) {
+        console.log(`Mensaje antiguo ignorado al reconectar WhatsApp (${message.key.id || 'sin id'}).`)
+        continue
+      }
       let chatId = message.key.remoteJidAlt || (message.key.remoteJid?.endsWith('@lid') ? message.key.participant : message.key.remoteJid) || message.key.remoteJid
       if (!chatId) continue
       if (chatId.endsWith('@g.us')) continue
@@ -230,6 +278,23 @@ export class WhatsappClient {
       setTimeout(() => void this.start(), delay)
     }
   }
+}
+
+export function isStaleIncomingMessage(message, now = Date.now()) {
+  const rawTimestamp = message?.messageTimestamp
+  let timestamp = 0
+
+  if (typeof rawTimestamp === 'number' || typeof rawTimestamp === 'bigint') {
+    timestamp = Number(rawTimestamp)
+  } else if (typeof rawTimestamp?.toNumber === 'function') {
+    timestamp = rawTimestamp.toNumber()
+  } else if (rawTimestamp !== undefined && rawTimestamp !== null) {
+    timestamp = Number(rawTimestamp)
+  }
+
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return false
+  const timestampMs = timestamp > 1_000_000_000_000 ? timestamp : timestamp * 1000
+  return now - timestampMs > MAX_INCOMING_MESSAGE_AGE_MS
 }
 
 // WhatsApp rechaza el handshake con error 405 ("Connection Failure") si la version de

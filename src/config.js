@@ -39,6 +39,7 @@ config.authDir = path.join(config.dataDir, 'auth_info')
 config.qrPath = path.join(config.dataDir, 'bot-qr.png')
 config.settingsPath = path.join(config.dataDir, 'bot-settings.json')
 config.conversationStatePath = path.join(config.dataDir, 'conversation-state.json')
+config.processedMessagesPath = path.join(config.dataDir, 'processed-message-ids.json')
 
 export function assertRequiredConfig() {
   const missing = []
