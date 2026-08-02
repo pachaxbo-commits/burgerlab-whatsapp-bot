@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { applyExplicitOrderNotes, filterUnrequestedExtras, reconcileInitialBurgerItems } from '../src/orderRules.js'
+import { applyExplicitOrderNotes, applyTargetedOrderItemChange, filterUnrequestedExtras, reconcileInitialBurgerItems } from '../src/orderRules.js'
 
 const catalog = {
   products: [
@@ -53,5 +53,35 @@ assert.match(withSauce[0].note, /2 salsas picantes extra \(gratis\)/)
 
 const withoutCheese = applyExplicitOrderNotes([{ ...filtered[0], extras: [{ id: 'queso', name: 'Queso', price: 3 }] }], 'No, borra todo lo del queso')
 assert.equal(withoutCheese[0].extras.length, 0)
+
+const existingOrder = [
+  { productId: 'burger-lab-doble-con-papas', name: 'Burger Lab DOBLE Con Papas', basePrice: 37, quantity: 1, extras: [{ id: 'tocino', name: 'Tocino', price: 4 }] },
+  { productId: 'bbq-doble-con-papas', name: 'BBQ DOBLE Con Papas', basePrice: 38, quantity: 1, extras: [{ id: 'pina', name: 'Pina', price: 2 }] },
+  { productId: 'bbq-doble-con-papas', name: 'BBQ DOBLE Con Papas', basePrice: 38, quantity: 1, extras: [{ id: 'tocino', name: 'Tocino', price: 4 }] },
+]
+const changedFirst = applyTargetedOrderItemChange(
+  existingOrder,
+  [{ productId: 'burger-lab-simple-con-papas', name: 'Burger Lab Simple Con Papas', basePrice: 22, quantity: 1, extras: [{ id: 'tocino', name: 'Tocino', price: 4 }] }],
+  'A la primer hamburguesa aumentar un tocino mas',
+  catalog,
+)
+assert.equal(changedFirst.length, 3)
+assert.deepEqual(changedFirst.map((item) => item.productId), existingOrder.map((item) => item.productId))
+assert.equal(changedFirst[0].extras.filter((extra) => extra.id === 'tocino').length, 2)
+assert.equal(changedFirst[1].extras.length, 1)
+assert.equal(changedFirst[2].extras.length, 1)
+
+const groupedOrder = [{
+  productId: 'burger-lab-simple-con-papas',
+  name: 'Burger Lab Simple Con Papas',
+  basePrice: 22,
+  quantity: 3,
+  extras: [],
+}]
+const changedSecond = applyTargetedOrderItemChange(groupedOrder, [], 'Ponle tocino a la segunda hamburguesa', catalog)
+assert.deepEqual(changedSecond.map((item) => item.quantity), [1, 1, 1])
+assert.equal(changedSecond[0].extras.length, 0)
+assert.equal(changedSecond[1].extras[0].id, 'tocino')
+assert.equal(changedSecond[2].extras.length, 0)
 
 console.log('Reglas de pedidos del bot verificadas.')
