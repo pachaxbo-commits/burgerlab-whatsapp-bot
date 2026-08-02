@@ -35,6 +35,26 @@ export const config = {
     'Natural, formal y vendedor. Habla como Burger Lab: amable, seguro, breve, con energia de restaurante. Ofrece ayuda sin sonar robotico ni exagerado.',
 }
 
+// Ubicacion verificada de Burger Lab. El pin no depende de variables antiguas de Railway:
+// si una variable queda vacia, invertida o fuera de Cochabamba, usamos este punto conocido.
+const verifiedRestaurantLocation = {
+  latitude: -17.3790815,
+  longitude: -66.1733523,
+}
+
+export function getRestaurantLocation() {
+  const latitude = Number(config.restaurantLatitude)
+  const longitude = Number(config.restaurantLongitude)
+  const looksValid = Number.isFinite(latitude)
+    && Number.isFinite(longitude)
+    && latitude >= -18.5
+    && latitude <= -16.5
+    && longitude >= -67.5
+    && longitude <= -65.0
+
+  return looksValid ? { latitude, longitude } : verifiedRestaurantLocation
+}
+
 config.authDir = path.join(config.dataDir, 'auth_info')
 config.qrPath = path.join(config.dataDir, 'bot-qr.png')
 config.settingsPath = path.join(config.dataDir, 'bot-settings.json')

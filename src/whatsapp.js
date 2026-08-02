@@ -149,6 +149,11 @@ export class WhatsappClient {
   }
 
   async sendLocation(chatId, { latitude, longitude, name, address }) {
+    const degreesLatitude = Number(latitude)
+    const degreesLongitude = Number(longitude)
+    if (!Number.isFinite(degreesLatitude) || !Number.isFinite(degreesLongitude)) {
+      throw new Error('La ubicacion del restaurante no tiene coordenadas validas.')
+    }
     if (this.testMode) {
       console.log(`\n🤖 [UBICACION] ${name || ''} ${address || ''} (${latitude}, ${longitude})\n`)
       return { key: { id: 'test-' + Date.now() } }
@@ -159,8 +164,8 @@ export class WhatsappClient {
     await this.sock.sendPresenceUpdate('paused', chatId).catch(() => undefined)
     return await this.sock.sendMessage(chatId, {
       location: {
-        degreesLatitude: latitude,
-        degreesLongitude: longitude,
+        degreesLatitude,
+        degreesLongitude,
         name,
         address,
       },

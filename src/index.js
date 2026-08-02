@@ -2,7 +2,7 @@ import express from 'express'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { config, assertRequiredConfig } from './config.js'
+import { config, assertRequiredConfig, getRestaurantLocation } from './config.js'
 import { ConversationStore } from './state.js'
 import { getSettings, loadSettings, registerSalesReset, updateSettings } from './settings.js'
 import {
@@ -18,6 +18,7 @@ import {
 } from './firebase.js'
 import { understandMessage } from './gemini.js'
 import { WhatsappClient } from './whatsapp.js'
+import { applyExplicitOrderNotes, filterUnrequestedExtras, reconcileInitialBurgerItems } from './orderRules.js'
 
 assertRequiredConfig()
 await loadSettings()
@@ -146,8 +147,8 @@ async function handleIncomingMessage({ chatId, text }) {
 
           if (state.awaitingPaymentProof.orderInput.fulfillmentType === 'delivery' && !state.awaitingPaymentProof.orderInput.deliveryAddress) {
             const reply = state.awaitingPaymentProof.proofReceived
-              ? 'Perfecto, ya recibi tu comprobante. Solo me falta tu ubicacion de WhatsApp o direccion exacta para pasar el pedido a caja.'
-              : 'Ya tengo tu pedido listo para QR. Por favor enviame el comprobante y tu ubicacion de WhatsApp o direccion exacta para el envio.'
+              ? 'Perfecto, ya recibi tu comprobante. Solo me falta tu ubicacion normal de WhatsApp (no en tiempo real) o direccion exacta para pasar el pedido a caja.'
+              : 'Ya tengo tu pedido listo para QR. Por favor enviame el comprobante y tu ubicacion normal de WhatsApp (no en tiempo real) o direccion exacta para el envio.'
             conversations.add(chatId, 'bot', reply)
             await whatsapp.sendText(chatId, reply)
             return
@@ -325,7 +326,7 @@ async function handleIncomingMessage({ chatId, text }) {
       // preparando). Avisamos directo a los duenos en vez de tocar Firestore de mas.
       if (!state.pendingOrder && !state.orderDraft?.items?.length && state.lastOrderId && looksLikeOrderModificationRequest(text) && !isExplicitResetRequest(text)) {
         await notifyOrderModificationRequest(chatId, state.lastOrderId, text)
-        const reply = 'Tu pedido ya se envió a cocina. Le aviso al equipo para que te ayude directamente con ese cambio.'
+        const reply = 'Su pedido ya fue enviado a cocina. Me comunico con el equipo para confirmar si todavia es posible modificarlo.'
         conversations.add(chatId, 'bot', reply)
         await whatsapp.sendText(chatId, reply)
         return
@@ -365,13 +366,25 @@ async function handleIncomingMessage({ chatId, text }) {
       }
 
       const previousItems = state.orderDraft?.items || pendingOrderToDraft(state.pendingOrder)?.items || []
+      const catalogItems = enforceCatalogItems(
+        reconcileInitialBurgerItems(aiResult.items, text, catalog),
+        catalog,
+      )
       const result = {
         ...aiResult,
-        items: fixExtrasCountedTwice(
-          enforceTripleRule(
-            enforcePapasRule(previousItems, enforceCatalogItems(aiResult.items, catalog), text, catalog),
-            catalog,
+        items: applyExplicitOrderNotes(
+          fixExtrasCountedTwice(
+            enforceTripleRule(
+              enforcePapasRule(
+                previousItems,
+                filterUnrequestedExtras(previousItems, catalogItems, text),
+                text,
+                catalog,
+              ),
+              catalog,
+            ),
           ),
+          text,
         ),
       }
 
@@ -456,9 +469,10 @@ async function handleIncomingMessage({ chatId, text }) {
         // Si ademas preguntaba donde quedamos, le mandamos el pin. Esto no intercepta el mensaje:
         // la IA ya decidio que era una pregunta y ya la contesto, esto solo agrega la ubicacion.
         if (isRestaurantLocationRequest(text)) {
+          const restaurantLocation = getRestaurantLocation()
           await whatsapp.sendLocation(chatId, {
-            latitude: config.restaurantLatitude,
-            longitude: config.restaurantLongitude,
+            latitude: restaurantLocation.latitude,
+            longitude: restaurantLocation.longitude,
             name: config.businessName,
             address: config.restaurantAddress,
           })
@@ -919,7 +933,8 @@ async function finalizeOrderDraft({ chatId, state, draft, catalog, text, aiReply
   // trae uno en la query ("maps.google.com/?q=...") y hacia que el bot creyera que el cliente
   // preguntaba algo, colando una respuesta suelta arriba del resumen.
   const textWithoutUrls = String(text || '').replace(/https?:\/\/\S+/gi, '')
-  const prefix = aiReply && /\?/.test(textWithoutUrls) ? `${aiReply}\n\n` : ''
+  const shouldIncludeServiceNotice = draft.pickupOnlyAdjusted === true
+  const prefix = aiReply && (/\?/.test(textWithoutUrls) || shouldIncludeServiceNotice) ? `${aiReply}\n\n` : ''
   const missingFields = getMissingOrderFields(draft)
   if (missingFields.length > 0) {
     if (shouldProceedWithQrWhileWaitingLocation(draft, missingFields)) {
@@ -935,7 +950,7 @@ async function finalizeOrderDraft({ chatId, state, draft, catalog, text, aiReply
 
   const orderInput = buildOrderInput({ result: draft, chatId })
   if (orderInput.fulfillmentType === 'delivery' && orderInput.deliveryQuoteStatus === 'missing_location') {
-    const reply = 'Perfecto, ya tengo tu pedido. Para cotizar el envio necesito que me mandes tu ubicacion de WhatsApp, por favor.'
+    const reply = 'Perfecto, ya tengo tu pedido. Para el envio, mandame tu ubicacion normal de WhatsApp, no la ubicacion en tiempo real, por favor.'
     conversations.add(chatId, 'bot', reply)
     await whatsapp.sendText(chatId, reply)
     return
@@ -972,12 +987,13 @@ async function createWhatsappOrderWithRetry(orderInput) {
 
 async function sendDeliveryPricingInfo(chatId) {
   const caption = getSettings().deliveryPricingMessage
+  const restaurantLocation = getRestaurantLocation()
 
   conversations.add(chatId, 'bot', caption)
   await whatsapp.sendImage(chatId, deliveryTariffImagePath, caption)
   await whatsapp.sendLocation(chatId, {
-    latitude: config.restaurantLatitude,
-    longitude: config.restaurantLongitude,
+    latitude: restaurantLocation.latitude,
+    longitude: restaurantLocation.longitude,
     name: config.businessName,
     address: config.restaurantAddress,
   })
@@ -998,9 +1014,13 @@ async function notifyHumanSupport(chatId, customerMessage) {
   const targetChatId = await resolveOwnerAlertChatId()
   if (!targetChatId) return
 
+  const customer = getCustomerContact(chatId)
+
   const message = [
     'Intervencion requerida del bot.',
-    `Cliente: ${chatId}`,
+    `Cliente: ${customer.name}`,
+    `Numero: ${customer.displayPhone}`,
+    `Abrir chat: ${customer.chatUrl}`,
     `Mensaje: ${customerMessage}`,
     'El bot no respondio ese punto para evitar dar informacion incorrecta.',
   ].join('\n')
@@ -1012,10 +1032,18 @@ async function notifyOrderModificationRequest(chatId, orderId, customerMessage) 
   const targetChatId = await resolveOwnerAlertChatId()
   if (!targetChatId) return
 
+  const order = await findOrder(orderId).catch(() => null)
+  const customer = getCustomerContact(chatId, {
+    name: order?.customerName,
+    phone: order?.customerPhone,
+  })
+
   const message = [
     'Cliente quiere modificar un pedido que YA fue confirmado.',
-    `Pedido: #${orderId}`,
-    `Cliente: ${chatId}`,
+    `Pedido: ${order?.displayNumber || orderId}`,
+    `Cliente: ${order?.customerName || customer.name}`,
+    `Numero: ${customer.displayPhone}`,
+    `Abrir chat: ${customer.chatUrl}`,
     `Mensaje: ${customerMessage}`,
     'El bot no lo modifico solo para evitar descoordinacion con cocina - contactar directamente.',
   ].join('\n')
@@ -1063,6 +1091,21 @@ async function resolveOwnerAlertChatId() {
   const settings = getSettings()
   if (settings.ownerAlertChatId) return settings.ownerAlertChatId
   return whatsapp.findGroupIdBySubject(settings.ownerAlertGroupName)
+}
+
+function getCustomerContact(chatId, preferred = {}) {
+  const state = conversations.get(chatId)
+  const draft = state.orderDraft || pendingOrderToDraft(state.pendingOrder)
+  const pendingInput = state.awaitingPaymentProof?.orderInput
+  const rawDigits = String(chatId || '').split('@')[0].replace(/\D/g, '')
+  const suppliedDigits = String(preferred.phone || draft?.customerPhone || pendingInput?.customerPhone || '').replace(/\D/g, '')
+  const phoneDigits = suppliedDigits || (String(chatId || '').endsWith('@lid') ? '' : rawDigits)
+
+  return {
+    name: preferred.name || draft?.customerName || pendingInput?.customerName || 'Cliente WhatsApp',
+    displayPhone: phoneDigits ? `+${phoneDigits}` : 'Sin numero disponible',
+    chatUrl: phoneDigits ? `https://wa.me/${phoneDigits}` : 'No disponible',
+  }
 }
 
 async function getCachedCatalog() {
@@ -1229,6 +1272,7 @@ function mergeOrderDraft(previous, result, text) {
       ...merged,
       fulfillmentType: 'pickup',
       deliveryAddress: '',
+      pickupOnlyAdjusted: true,
       reply: merged.reply ? `${getSettings().pickupOnlyMessage}\n\n${merged.reply}` : getSettings().pickupOnlyMessage,
     }
   }
@@ -1495,7 +1539,7 @@ function hasSeenOrderTemplate(state) {
 
 function buildMissingFieldsReply(missingFields, { text = '', catalog = null, state = null } = {}) {
   if (missingFields.length === 1 && missingFields[0] === 'tu ubicacion de WhatsApp') {
-    return 'Ya tengo tu pedido casi listo. Por favor envíame tu *ubicación de WhatsApp* (o dirección exacta) para finalizar.'
+    return 'Ya tengo tu pedido casi listo. Por favor enviame tu *ubicacion normal de WhatsApp* (no en tiempo real) o una direccion exacta para finalizar.'
   }
 
   if (missingFields.includes('tu pedido')) {
@@ -1524,7 +1568,7 @@ function buildContextualRecoveryReply(state) {
     const orderInput = state.awaitingPaymentProof.orderInput
     const needsLocation = orderInput.fulfillmentType === 'delivery' && !orderInput.deliveryAddress
     if (state.awaitingPaymentProof.proofReceived && needsLocation) {
-      return 'Ya recibi tu comprobante. Solo me falta tu ubicacion de WhatsApp o direccion exacta para pasar el pedido a caja.'
+      return 'Ya recibi tu comprobante. Solo me falta tu ubicacion normal de WhatsApp (no en tiempo real) o direccion exacta para pasar el pedido a caja.'
     }
 
     if (!state.awaitingPaymentProof.proofReceived) {
@@ -1841,7 +1885,7 @@ function startConfirmationNoticePolling() {
 
         await whatsapp.sendText(
           chatId,
-          'Tu pedido ya salio para delivery. Por favor, este atento al telefono para recibirlo. Gracias por pedir en Burger Lab.',
+          'Su moto ya esta en camino. Por favor, este atento al telefono para recibir su pedido. Gracias por pedir en Burger Lab.',
         )
         await markWhatsappDispatchSent(order)
       }
