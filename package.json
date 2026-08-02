@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "test-chat": "node scripts/test-chat.js"
+    "test-chat": "node scripts/test-chat.js",
+    "test-orders": "node scripts/test-order-rules.js"
   },
   "dependencies": {
     "@google/genai": "^1.19.0",
