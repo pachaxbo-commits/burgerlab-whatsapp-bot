@@ -18,6 +18,9 @@ export const defaultSettings = {
   pickupOnlyMode: false,
   pickupOnlyMessage: 'Por el momento no tenemos delivery disponible. Solo estamos recibiendo pedidos para recojo en el restaurante. Si te parece bien, puedo registrar tu pedido para que pases a recogerlo.',
   autoRepliesEnabled: true,
+  // Por ahora el dueño reenvia manualmente cada delivery al grupo. Mantener esto apagado evita
+  // que llegue una copia automatica adicional al confirmar el pedido en caja.
+  autoSendDeliveryGroupOrders: false,
   deliveryGroupName: config.deliveryGroupName,
   deliveryGroupId: config.deliveryGroupId,
   ownerAlertGroupName: config.ownerAlertGroupName,

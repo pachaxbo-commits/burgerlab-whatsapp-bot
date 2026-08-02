@@ -608,6 +608,7 @@ app.get('/health', async (_req, res) => {
       acceptingOrdersPausedUntil: settings.acceptingOrdersPausedUntil,
       acceptingOrdersPauseReason: settings.acceptingOrdersPauseReason,
       autoRepliesEnabled: settings.autoRepliesEnabled,
+      autoSendDeliveryGroupOrders: settings.autoSendDeliveryGroupOrders === true,
       whatsappConnected: whatsapp.connected,
     })
   } catch (error) {
@@ -1066,6 +1067,7 @@ async function notifyOrderModificationRequest(chatId, orderId, customerMessage) 
 
 async function notifyDeliveryGroupOrderConfirmed(order, delayMinutes) {
   if (order.fulfillmentType !== 'delivery') return
+  if (getSettings().autoSendDeliveryGroupOrders !== true) return
 
   const targetChatId = await resolveDeliveryGroupChatId()
   if (!targetChatId) return
