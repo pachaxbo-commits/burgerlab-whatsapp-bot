@@ -18,7 +18,7 @@ import {
 } from './firebase.js'
 import { understandMessage } from './gemini.js'
 import { WhatsappClient } from './whatsapp.js'
-import { applyExplicitOrderNotes, filterUnrequestedExtras, reconcileInitialBurgerItems } from './orderRules.js'
+import { applyExplicitOrderNotes, applyTargetedOrderItemChange, filterUnrequestedExtras, reconcileInitialBurgerItems } from './orderRules.js'
 
 assertRequiredConfig()
 await loadSettings()
@@ -366,8 +366,14 @@ async function handleIncomingMessage({ chatId, text }) {
       }
 
       const previousItems = state.orderDraft?.items || pendingOrderToDraft(state.pendingOrder)?.items || []
+      const interpretedItems = applyTargetedOrderItemChange(
+        previousItems,
+        previousItems.length ? aiResult.items : reconcileInitialBurgerItems(aiResult.items, text, catalog),
+        text,
+        catalog,
+      )
       const catalogItems = enforceCatalogItems(
-        reconcileInitialBurgerItems(aiResult.items, text, catalog),
+        interpretedItems,
         catalog,
       )
       const result = {

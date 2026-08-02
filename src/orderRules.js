@@ -52,6 +52,113 @@ function findQuickExtra(catalog, pattern) {
   return (catalog?.quickExtras || []).find((extra) => pattern.test(normalizeText(extra.name)))
 }
 
+function findMentionedQuickExtra(text, catalog) {
+  const normalized = normalizeText(text)
+  const aliases = [
+    { pattern: /\btocinos?\b/, catalogPattern: /tocino/ },
+    { pattern: /\bpinas?\b/, catalogPattern: /pina/ },
+    { pattern: /\bquesos?(?:\s+extra)?\b/, catalogPattern: /^queso$/ },
+    { pattern: /\bcarnes?\s+extra\b/, catalogPattern: /carne/ },
+  ]
+
+  const alias = aliases.find((candidate) => candidate.pattern.test(normalized))
+  return alias ? findQuickExtra(catalog, alias.catalogPattern) : null
+}
+
+function requestedExtraQuantity(text, extraName) {
+  const normalized = normalizeText(text)
+  const name = normalizeText(extraName)
+  const tokenPattern = '(\\d+|un|una|uno|dos|tres|cuatro|cinco|seis)'
+  const namePattern = name.includes('pina')
+    ? 'pinas?'
+    : name.includes('tocino')
+      ? 'tocinos?'
+      : name === 'queso'
+        ? 'quesos?(?:\\s+extra)?'
+        : 'carnes?\\s+extra'
+  const match = normalized.match(new RegExp(`\\b${tokenPattern}\\s+${namePattern}\\b`))
+  if (match) return quantityFromToken(match[1], 1)
+  if (new RegExp(`\\bdoble\\s+${namePattern}\\b`).test(normalized)) return 2
+  return 1
+}
+
+function targetUnitIndex(text, totalUnits) {
+  const normalized = normalizeText(text)
+  const ordinalPatterns = [
+    /\b(?:primer|primera|primero|1ra|1ro)\b/,
+    /\b(?:segunda|segundo|2da|2do)\b/,
+    /\b(?:tercera|tercero|3ra|3ro)\b/,
+    /\b(?:cuarta|cuarto|4ta|4to)\b/,
+    /\b(?:quinta|quinto|5ta|5to)\b/,
+  ]
+  const ordinal = ordinalPatterns.findIndex((pattern) => pattern.test(normalized))
+  if (ordinal >= 0) return ordinal < totalUnits ? ordinal : -1
+  if (/\b(?:ultima|ultimo)\b/.test(normalized)) return totalUnits - 1
+  return -1
+}
+
+function expandTargetUnit(items, targetIndex) {
+  const expanded = []
+  let unitIndex = 0
+
+  for (const item of items || []) {
+    const quantity = Math.max(1, Math.round(Number(item.quantity) || 1))
+    const targetInsideItem = targetIndex >= unitIndex && targetIndex < unitIndex + quantity
+    if (!targetInsideItem) {
+      expanded.push({ ...item, extras: [...(item.extras || [])] })
+      unitIndex += quantity
+      continue
+    }
+
+    const unitsBefore = targetIndex - unitIndex
+    const unitsAfter = quantity - unitsBefore - 1
+    if (unitsBefore > 0) expanded.push({ ...item, quantity: unitsBefore, extras: [...(item.extras || [])] })
+    expanded.push({ ...item, quantity: 1, extras: [...(item.extras || [])], __targetedModification: true })
+    if (unitsAfter > 0) expanded.push({ ...item, quantity: unitsAfter, extras: [...(item.extras || [])] })
+    unitIndex += quantity
+  }
+
+  return expanded
+}
+
+export function applyTargetedOrderItemChange(previousItems, aiItems, text, catalog) {
+  if (!previousItems?.length) return aiItems || []
+
+  const normalized = normalizeText(text)
+  const isChangeRequest = /\b(?:agrega|agregar|agregale|aumenta|aumentar|aumentale|anade|anadir|pon|pone|poner|ponle|suma|sumar|quita|quitar|saca|sacar|elimina|eliminar|borra|borrar|sin)\b/.test(normalized)
+  if (!isChangeRequest) return aiItems || []
+
+  const totalUnits = previousItems.reduce((sum, item) => sum + Math.max(1, Math.round(Number(item.quantity) || 1)), 0)
+  const targetIndex = targetUnitIndex(text, totalUnits)
+  const extra = findMentionedQuickExtra(text, catalog)
+  if (targetIndex < 0 || !extra) return aiItems || []
+
+  const removing = /\b(?:quita|quitar|saca|sacar|elimina|eliminar|borra|borrar|sin)\b/.test(normalized)
+  const count = requestedExtraQuantity(text, extra.name)
+  return expandTargetUnit(previousItems, targetIndex).map((item) => {
+    if (!item.__targetedModification) return item
+
+    const currentExtras = [...(item.extras || [])]
+    let extras
+    if (removing) {
+      const removeAll = /\bsin\b/.test(normalized) || !new RegExp(`\\b(?:\\d+|un|una|uno|dos|tres|cuatro|cinco|seis|doble)\\b`).test(normalized)
+      let remainingToRemove = removeAll ? Number.POSITIVE_INFINITY : count
+      extras = currentExtras.filter((candidate) => {
+        const matches = normalizeText(candidate.name) === normalizeText(extra.name)
+        if (!matches || remainingToRemove <= 0) return true
+        remainingToRemove -= 1
+        return false
+      })
+    } else {
+      const additions = Array.from({ length: count }, () => ({ id: extra.id, name: extra.name, price: Number(extra.price) || 0 }))
+      extras = [...currentExtras, ...additions]
+    }
+
+    const { __targetedModification, ...cleanItem } = item
+    return { ...cleanItem, extras }
+  })
+}
+
 function collectExtra(line, catalog, pattern, catalogPattern, itemQuantity) {
   const match = line.match(new RegExp(`\\b(?:(\\d+|un|una|uno|dos|tres|cuatro|cinco|seis)\\s+)?${pattern}\\b`, 'i'))
   if (!match) return { extras: [], perUnit: false }
