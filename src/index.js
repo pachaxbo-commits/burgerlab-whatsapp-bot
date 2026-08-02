@@ -19,6 +19,7 @@ import {
 import { understandMessage } from './gemini.js'
 import { WhatsappClient } from './whatsapp.js'
 import { applyExplicitOrderNotes, applyTargetedOrderItemChange, filterUnrequestedExtras, reconcileInitialBurgerItems } from './orderRules.js'
+import { formatCustomerPhone, resolveCustomerPhone } from './contact.js'
 
 assertRequiredConfig()
 await loadSettings()
@@ -932,6 +933,12 @@ async function handleOrderConfirmation(chatId, state) {
 // de papas y resumen. Estaba duplicado y era cuestion de tiempo que los dos caminos se
 // desincronizaran y uno preguntara cosas que el otro no.
 async function finalizeOrderDraft({ chatId, state, draft, catalog, text, aiReply = '' }) {
+  const customerPhone = resolveCustomerPhone(chatId, draft.customerPhone)
+  if (customerPhone && customerPhone !== draft.customerPhone) {
+    draft = { ...draft, customerPhone }
+    conversations.setOrderDraft(chatId, draft)
+  }
+
   // Si el cliente pregunto algo en el mismo mensaje del pedido ("...Tiene motito ? O mando a
   // recoger ?"), la respuesta de la IA se antepone: antes se descartaba y el bot solo pedia el
   // dato que faltaba, dejando la pregunta sin contestar.
@@ -1103,13 +1110,11 @@ function getCustomerContact(chatId, preferred = {}) {
   const state = conversations.get(chatId)
   const draft = state.orderDraft || pendingOrderToDraft(state.pendingOrder)
   const pendingInput = state.awaitingPaymentProof?.orderInput
-  const rawDigits = String(chatId || '').split('@')[0].replace(/\D/g, '')
-  const suppliedDigits = String(preferred.phone || draft?.customerPhone || pendingInput?.customerPhone || '').replace(/\D/g, '')
-  const phoneDigits = suppliedDigits || (String(chatId || '').endsWith('@lid') ? '' : rawDigits)
+  const phoneDigits = resolveCustomerPhone(chatId, preferred.phone || draft?.customerPhone || pendingInput?.customerPhone || '')
 
   return {
     name: preferred.name || draft?.customerName || pendingInput?.customerName || 'Cliente WhatsApp',
-    displayPhone: phoneDigits ? `+${phoneDigits}` : 'Sin numero disponible',
+    displayPhone: formatCustomerPhone(phoneDigits),
     chatUrl: phoneDigits ? `https://wa.me/${phoneDigits}` : 'No disponible',
   }
 }
@@ -1692,7 +1697,7 @@ function buildOrderInput({ result, chatId }) {
     paymentOnArrival: Boolean(result.paymentOnArrival),
     fulfillmentType: result.fulfillmentType || 'pickup',
     customerName: result.customerName,
-    customerPhone: result.customerPhone,
+    customerPhone: resolveCustomerPhone(chatId, result.customerPhone),
     deliveryAddress: result.deliveryAddress,
     chatId,
   }
@@ -1976,6 +1981,7 @@ function buildOrderSummary(orderInput) {
   return [
     'Te paso el resumen de tu pedido:',
     `Nombre: ${orderInput.customerName}`,
+    `Numero: ${formatCustomerPhone(orderInput.customerPhone)}`,
     ...itemLines,
     `Pedido: Bs ${orderInput.productSubtotal ?? orderInput.total}`,
     ...deliveryLine,
