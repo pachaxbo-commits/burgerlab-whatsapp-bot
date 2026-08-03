@@ -20,7 +20,7 @@ import { understandMessage } from './gemini.js'
 import { WhatsappClient } from './whatsapp.js'
 import { applyExplicitOrderNotes, applyTargetedOrderItemChange, filterUnrequestedExtras, reconcileInitialBurgerItems } from './orderRules.js'
 import { formatCustomerPhone, resolveCustomerPhone } from './contact.js'
-import { isConfirmedOrderModificationRequest, isConfirmedOrderStatusRequest } from './postOrderRules.js'
+import { isConfirmedOrderModificationRequest, isConfirmedOrderStatusRequest, shouldSuppressRepeatedOrderSummary } from './postOrderRules.js'
 
 assertRequiredConfig()
 await loadSettings()
@@ -104,6 +104,7 @@ async function handleIncomingMessage({ chatId, text }) {
 
     conversations.add(chatId, 'cliente', text)
     const state = conversations.get(chatId)
+    const previousPendingSummary = state.pendingOrder?.summary || ''
     const isFirstCustomerMessage = state.messages.filter((entry) => entry.role === 'cliente').length === 1
     await whatsapp.startTyping(chatId)
 
@@ -537,7 +538,7 @@ async function handleIncomingMessage({ chatId, text }) {
 
       if (hasOrderSignal) {
         conversations.setOrderDraft(chatId, mergedResult)
-        await finalizeOrderDraft({ chatId, state, draft: mergedResult, catalog, text, aiReply: result.reply })
+        await finalizeOrderDraft({ chatId, state, draft: mergedResult, catalog, text, aiReply: result.reply, previousPendingSummary })
         return
       }
 
@@ -937,7 +938,7 @@ async function handleOrderConfirmation(chatId, state) {
 // Ultimo tramo comun a los dos caminos (el deterministico y el de la IA): faltantes, aclaracion
 // de papas y resumen. Estaba duplicado y era cuestion de tiempo que los dos caminos se
 // desincronizaran y uno preguntara cosas que el otro no.
-async function finalizeOrderDraft({ chatId, state, draft, catalog, text, aiReply = '' }) {
+async function finalizeOrderDraft({ chatId, state, draft, catalog, text, aiReply = '', previousPendingSummary = '' }) {
   const customerPhone = resolveCustomerPhone(chatId, draft.customerPhone)
   if (customerPhone && customerPhone !== draft.customerPhone) {
     draft = { ...draft, customerPhone }
@@ -981,6 +982,10 @@ async function finalizeOrderDraft({ chatId, state, draft, catalog, text, aiReply
   }
 
   conversations.setPendingOrder(chatId, orderInput, summary)
+  if (shouldSuppressRepeatedOrderSummary(previousPendingSummary, summary, text)) {
+    console.log(`Resumen identico omitido para ${chatId}; el pedido sigue esperando confirmacion.`)
+    return
+  }
   const reply = `${prefix}${summary}\n\nConfirmas el pedido?`
   conversations.add(chatId, 'bot', reply)
   await whatsapp.sendText(chatId, reply)
