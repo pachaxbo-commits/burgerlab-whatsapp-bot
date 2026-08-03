@@ -11,5 +11,7 @@ assert.equal(resolveCustomerPhone('123456789012345@lid', '67688886'), '591676888
 assert.equal(formatCustomerPhone('59162834717'), '+59162834717')
 assert.equal(formatCustomerPhone('67688886'), '+59167688886')
 assert.equal(defaultSettings.autoSendDeliveryGroupOrders, false)
+assert.match(defaultSettings.confirmationPromptMessage, /no podremos realizar modificaciones/i)
+assert.match(defaultSettings.registeredOrderFooterMessage, /nuevo pedido/i)
 
 console.log('Numero real del chat y envio manual al grupo verificados.')

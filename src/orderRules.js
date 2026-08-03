@@ -3,6 +3,9 @@ const NUMBER_WORDS = new Map([
   ['cinco', 5], ['seis', 6], ['siete', 7], ['ocho', 8], ['nueve', 9], ['diez', 10],
 ])
 
+const QUANTITY_TOKEN_PATTERN = '\\d+|un|una|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez'
+const BURGER_REFERENCE_PATTERN = '(?:bbq(?:\\s+lab)?|bbk(?:\\s+lab)?|bbc(?:\\s+lab)?|barbacoas?|barbakoas?|burguers?\\s*lab|burgers?\\s*lab|hamburguesas?(?:\\s+(?:de\\s+)?(?:bbq|barbacoa|barbakoa))?)'
+
 function normalizeText(value) {
   return String(value || '')
     .normalize('NFD')
@@ -25,7 +28,44 @@ function isBurgerProduct(product) {
 }
 
 function countBurgerMentions(text) {
-  return (normalizeText(text).match(/\b(?:bbq(?:\s+lab)?|burguers?\s*lab|burgers?\s*lab|hamburguesas?)\b/g) || []).length
+  return (normalizeText(text).match(new RegExp(`\\b${BURGER_REFERENCE_PATTERN}\\b`, 'g')) || []).length
+}
+
+function burgerBrand(item, catalog) {
+  const product = (catalog?.products || []).find((candidate) => candidate.id === item.productId)
+  const value = normalizeText(`${product?.id || ''} ${product?.name || ''} ${item.productId || ''} ${item.name || ''}`)
+  return /\bbbq\b|\bbarbacoa\b|\bbarbakoa\b/.test(value) ? 'bbq' : 'burger-lab'
+}
+
+function applyExplicitBurgerQuantities(items, text, catalog) {
+  const normalized = normalizeText(text)
+  const pattern = new RegExp(
+    `\\b(${QUANTITY_TOKEN_PATTERN})\\s+(?:de\\s+)?(?:(?:simples?|dobles?|triples?)\\s+)?(${BURGER_REFERENCE_PATTERN})\\b`,
+    'g',
+  )
+  const mentions = Array.from(normalized.matchAll(pattern)).map((match) => ({
+    brand: /bbq|bbk|bbc|barbacoa|barbakoa/.test(match[2]) ? 'bbq' : 'burger-lab',
+    quantity: quantityFromToken(match[1], 1),
+  }))
+  if (!mentions.length) return items || []
+
+  const corrected = (items || []).map((item) => ({ ...item }))
+  for (const brand of ['bbq', 'burger-lab']) {
+    const brandMentions = mentions.filter((mention) => mention.brand === brand)
+    const itemIndexes = corrected
+      .map((item, index) => (isBurgerProduct((catalog?.products || []).find((product) => product.id === item.productId) || item) && burgerBrand(item, catalog) === brand ? index : -1))
+      .filter((index) => index >= 0)
+
+    if (brandMentions.length === itemIndexes.length) {
+      brandMentions.forEach((mention, index) => {
+        corrected[itemIndexes[index]].quantity = mention.quantity
+      })
+    } else if (brandMentions.length === 1 && itemIndexes.length === 1) {
+      corrected[itemIndexes[0]].quantity = brandMentions[0].quantity
+    }
+  }
+
+  return corrected
 }
 
 function findBurgerProduct(catalog, { brand, size, withFries, price }) {
@@ -175,11 +215,13 @@ function collectExtra(line, catalog, pattern, catalogPattern, itemQuantity) {
 
 function parseBurgerLine(rawLine, catalog) {
   const line = normalizeText(rawLine)
-  if (!/\b(?:bbq(?:\s+lab)?|burguers?\s*lab|burgers?\s*lab|hamburguesas?)\b/.test(line)) return null
+  if (!new RegExp(`\\b${BURGER_REFERENCE_PATTERN}\\b`).test(line)) return null
 
-  const quantityMatch = line.match(/^\s*(\d+|un|una|uno|dos|tres|cuatro|cinco|seis)\b/)
+  const quantityMatch = line.match(new RegExp(
+    `\\b(${QUANTITY_TOKEN_PATTERN})\\s+(?:de\\s+)?(?:(?:simples?|dobles?|triples?)\\s+)?${BURGER_REFERENCE_PATTERN}\\b`,
+  ))
   const quantity = quantityFromToken(quantityMatch?.[1], 1)
-  const brand = /\bbbq\b|barbacoa/.test(line) ? 'bbq' : 'burger-lab'
+  const brand = /\b(?:bbq|bbk|bbc)\b|\b(?:barbacoa|barbakoa)s?\b/.test(line) ? 'bbq' : 'burger-lab'
   const triple = /\btriples?\b/.test(line)
   const size = /\bdobles?\b/.test(line) || triple ? 'doble' : 'simple'
   const withFries = !/\bsin\s+papas?\b/.test(line)
@@ -261,8 +303,9 @@ function appendExtraFriesProduct(items, text, catalog) {
 }
 
 export function reconcileInitialBurgerItems(aiItems, text, catalog) {
+  const quantityCorrectedItems = applyExplicitBurgerQuantities(aiItems || [], text, catalog)
   const mentions = countBurgerMentions(text)
-  if (!mentions) return appendExtraFriesProduct(aiItems || [], text, catalog)
+  if (!mentions) return appendExtraFriesProduct(quantityCorrectedItems, text, catalog)
 
   const parsed = String(text || '')
     .split(/\r?\n/)
@@ -271,9 +314,9 @@ export function reconcileInitialBurgerItems(aiItems, text, catalog) {
 
   // A sentence containing several burgers is left to the model; the deterministic parser is
   // intentionally used only when every mentioned burger maps to one unambiguous line.
-  if (!parsed.length || parsed.length !== mentions) return appendExtraFriesProduct(aiItems || [], text, catalog)
+  if (!parsed.length || parsed.length !== mentions) return appendExtraFriesProduct(quantityCorrectedItems, text, catalog)
 
-  const nonBurgerItems = (aiItems || []).filter((item) => {
+  const nonBurgerItems = quantityCorrectedItems.filter((item) => {
     const product = (catalog?.products || []).find((candidate) => candidate.id === item.productId)
     return !isBurgerProduct(product || item)
   })

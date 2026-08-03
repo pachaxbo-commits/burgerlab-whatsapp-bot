@@ -175,10 +175,10 @@ async function handleIncomingMessage({ chatId, text }) {
             state.awaitingPaymentProof = null
             conversations.scheduleSave()
 
-            const reply = [
+            const reply = buildRegisteredOrderReply([
               'Perfecto, recibi tu comprobante.',
               'Voy a pasar tu pedido a caja para que revisen el pago y confirmen el tiempo de salida.',
-            ].join('\n')
+            ])
 
             conversations.add(chatId, 'bot', reply)
             await whatsapp.sendText(chatId, reply)
@@ -203,11 +203,11 @@ async function handleIncomingMessage({ chatId, text }) {
             expectedPaymentMethod: 'cash',
             paymentReviewNote: 'El cliente paga al recoger en el restaurante.',
           })
-          const reply = [
-            'Perfecto, registre tu pedido.',
+          const reply = buildRegisteredOrderReply([
+            'Perfecto, registré tu pedido.',
             `Pagas los Bs ${orderInput.total} en el restaurante cuando recojas.`,
             'En caja lo van a confirmar y te aviso el tiempo exacto de salida.',
-          ].join('\n')
+          ])
           conversations.add(chatId, 'bot', reply)
           await whatsapp.sendText(chatId, reply)
           return
@@ -242,10 +242,10 @@ async function handleIncomingMessage({ chatId, text }) {
           state.orderDraft = null
           conversations.scheduleSave()
 
-          const reply = [
+          const reply = buildRegisteredOrderReply([
             'Perfecto, recibi tu comprobante.',
             'Voy a pasar tu pedido a caja para que revisen el pago y confirmen el tiempo de salida.',
-          ].join('\n')
+          ])
 
           conversations.add(chatId, 'bot', reply)
           await whatsapp.sendText(chatId, reply)
@@ -263,10 +263,10 @@ async function handleIncomingMessage({ chatId, text }) {
           state.orderDraft = null
           conversations.scheduleSave()
 
-          const reply = [
+          const reply = buildRegisteredOrderReply([
             'Perfecto, recibi tu comprobante.',
             'Voy a pasar tu pedido a caja para que revisen el pago y confirmen el tiempo de salida.',
-          ].join('\n')
+          ])
 
           conversations.add(chatId, 'bot', reply)
           await whatsapp.sendText(chatId, reply)
@@ -893,6 +893,10 @@ async function requestQrPaymentProof(chatId, orderInput, summary) {
   await whatsapp.sendImage(chatId, paymentQrImagePath, caption)
 }
 
+function buildRegisteredOrderReply(lines) {
+  return [...lines, '', getSettings().registeredOrderFooterMessage].join('\n')
+}
+
 const PICKUP_PAYMENT_QUESTION = [
   '¿Cómo prefieres pagar?',
   '',
@@ -931,14 +935,14 @@ async function handleOrderConfirmation(chatId, state) {
     await registerConfirmedOrder(chatId, orderInput, {
       paymentReviewNote: 'El cliente paga el total directamente al delivery (efectivo o QR). El envio se cobra aparte.',
     })
-    const reply = [
-      'Perfecto, registre tu pedido.',
+    const reply = buildRegisteredOrderReply([
+      'Perfecto, registré tu pedido.',
       '',
       `El total de Bs ${orderInput.total} lo pagas directamente con la moto, ya sea en efectivo o por QR.`,
       'El costo del envio se cotiza aparte y tambien lo pagas con el delivery.',
       '',
       'En caja lo van a confirmar y te aviso el tiempo exacto de salida.',
-    ].join('\n')
+    ])
     conversations.add(chatId, 'bot', reply)
     await whatsapp.sendText(chatId, reply)
     return
@@ -1003,7 +1007,7 @@ async function finalizeOrderDraft({ chatId, state, draft, catalog, text, aiReply
     console.log(`Resumen identico omitido para ${chatId}; el pedido sigue esperando confirmacion.`)
     return
   }
-  const reply = `${prefix}${summary}\n\nConfirmas el pedido?`
+  const reply = `${prefix}${summary}\n\n${getSettings().confirmationPromptMessage}`
   conversations.add(chatId, 'bot', reply)
   await whatsapp.sendText(chatId, reply)
 }

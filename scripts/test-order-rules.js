@@ -48,6 +48,24 @@ assert.equal(structured[1].extrasForEachUnit, true)
 const byPrice = reconcileInitialBurgerItems([], 'Quiero una Burger Lab de 19', catalog)
 assert.equal(byPrice[0].productId, 'burger-lab-simple-sin-papas')
 
+const twoBbqNatural = reconcileInitialBurgerItems([
+  { productId: 'bbq-simple-con-papas', name: 'BBQ Simple Con Papas', basePrice: 23, quantity: 1, extras: [] },
+], 'Quiero dos BBQ con papas', catalog)
+assert.equal(twoBbqNatural[0].quantity, 2)
+assert.equal(twoBbqNatural[0].productId, 'bbq-simple-con-papas')
+
+const twoBarbecue = reconcileInitialBurgerItems([
+  { productId: 'bbq-simple-con-papas', name: 'BBQ Simple Con Papas', basePrice: 23, quantity: 1, extras: [] },
+], 'Me da dos de barbacoa con papas', catalog)
+assert.equal(twoBarbecue[0].quantity, 2)
+assert.equal(twoBarbecue[0].productId, 'bbq-simple-con-papas')
+
+const mixedNaturalQuantities = reconcileInitialBurgerItems([
+  { productId: 'bbq-simple-con-papas', name: 'BBQ Simple Con Papas', basePrice: 23, quantity: 1, extras: [] },
+  { productId: 'burger-lab-simple-con-papas', name: 'Burger Lab Simple Con Papas', basePrice: 22, quantity: 1, extras: [] },
+], 'Quiero dos BBQ y una Burger Lab, todas con papas', catalog)
+assert.deepEqual(mixedNaturalQuantities.map((item) => item.quantity), [2, 1])
+
 const directUnstructuredOrder = reconcileInitialBurgerItems([], [
   'Buenas noches disculpe quisiera realizar el siguiente pedido:',
   'Raul Uzcategui',

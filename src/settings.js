@@ -28,6 +28,8 @@ export const defaultSettings = {
   closedMessage: `Gracias por escribir a ${config.businessName}. Nuestro horario de pedidos por WhatsApp es de 5:00 pm a 11:00 pm. Te esperamos en ese horario para atenderte con gusto.`,
   pausedOrdersMessage: 'En este momento no estamos recibiendo pedidos por WhatsApp. Por favor intenta nuevamente mas tarde.',
   qrPaymentMessage: 'Cuando envies el comprobante por este chat, caja revisara el pago y te avisare el tiempo de salida.',
+  confirmationPromptMessage: '¿Confirmas el pedido?\nDespués de confirmarlo, no podremos realizar modificaciones. Si necesitas cambiar algo, con gusto podemos registrarlo como un nuevo pedido.',
+  registeredOrderFooterMessage: 'Una vez registrado, no podremos modificar este pedido. Si necesitas cambiar o agregar algo, con gusto podemos registrarlo como un nuevo pedido.',
   deliveryPricingMessage: 'Te paso el tarifario de delivery y la ubicacion de Burger Lab para que puedas estimar el envio. El costo final puede variar por zona, clima, subida, ruta o disponibilidad del repartidor.',
   humanHelpMessage: 'Dame un momento, por favor. Voy a pedir apoyo para confirmarte eso correctamente.',
   personality: config.personality,
@@ -84,6 +86,14 @@ function normalizeSettings(value) {
       typeof value?.pickupOnlyMessage === 'string' && value.pickupOnlyMessage !== legacyPickupOnlyMessage
         ? value.pickupOnlyMessage
         : defaultSettings.pickupOnlyMessage,
+    confirmationPromptMessage:
+      typeof value?.confirmationPromptMessage === 'string' && value.confirmationPromptMessage.trim()
+        ? value.confirmationPromptMessage.trim()
+        : defaultSettings.confirmationPromptMessage,
+    registeredOrderFooterMessage:
+      typeof value?.registeredOrderFooterMessage === 'string' && value.registeredOrderFooterMessage.trim()
+        ? value.registeredOrderFooterMessage.trim()
+        : defaultSettings.registeredOrderFooterMessage,
     autoRepliesEnabled: value?.autoRepliesEnabled !== false,
   }
 }
