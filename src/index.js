@@ -20,6 +20,7 @@ import { understandMessage } from './gemini.js'
 import { WhatsappClient } from './whatsapp.js'
 import { applyExplicitOrderNotes, applyTargetedOrderItemChange, filterUnrequestedExtras, reconcileInitialBurgerItems } from './orderRules.js'
 import { formatCustomerPhone, resolveCustomerPhone } from './contact.js'
+import { isConfirmedOrderModificationRequest, isConfirmedOrderStatusRequest } from './postOrderRules.js'
 
 assertRequiredConfig()
 await loadSettings()
@@ -322,14 +323,19 @@ async function handleIncomingMessage({ chatId, text }) {
       }
 
       // El pedido anterior ya se confirmo (fue a cocina) y no hay nada pendiente/en borrador -
+      // una consulta de estado requiere que caja confirme la situacion real. Se avisa al equipo
+      // y el bot guarda silencio para no afirmar que salio o que sigue en cocina sin saberlo.
+      if (!state.pendingOrder && !state.orderDraft?.items?.length && state.lastOrderId && isConfirmedOrderStatusRequest(text)) {
+        await notifyOrderStatusRequest(chatId, state.lastOrderId, text)
+        return
+      }
+
+      // El pedido anterior ya se confirmo (fue a cocina) y no hay nada pendiente/en borrador -
       // si el cliente ahora quiere agregar/cambiar algo, NO lo reescribimos solos (ya se le avisa
       // a caja/cocina y modificarlo por atras podria desincronizarse con lo que ya estan
       // preparando). Avisamos directo a los duenos en vez de tocar Firestore de mas.
-      if (!state.pendingOrder && !state.orderDraft?.items?.length && state.lastOrderId && looksLikeOrderModificationRequest(text) && !isExplicitResetRequest(text)) {
+      if (!state.pendingOrder && !state.orderDraft?.items?.length && state.lastOrderId && isConfirmedOrderModificationRequest(text) && !isExplicitResetRequest(text)) {
         await notifyOrderModificationRequest(chatId, state.lastOrderId, text)
-        const reply = 'Su pedido ya fue enviado a cocina. Me comunico con el equipo para confirmar si todavia es posible modificarlo.'
-        conversations.add(chatId, 'bot', reply)
-        await whatsapp.sendText(chatId, reply)
         return
       }
 
@@ -546,13 +552,11 @@ async function handleIncomingMessage({ chatId, text }) {
       await whatsapp.sendText(chatId, result.reply)
     } catch (error) {
       // Si algo falla no se vuelve a adivinar el pedido con expresiones regulares (eso registraba
-      // pedidos distintos de los que el cliente pidio). Se avisa a una persona y se le responde
-      // algo seguro segun donde quedo la conversacion.
+      // pedidos distintos de los que el cliente pidio). Se avisa a una persona y el bot guarda
+      // silencio para no agregar otra respuesta potencialmente incorrecta.
       console.error('Error procesando mensaje:', error)
       await notifyHumanSupport(chatId, text).catch(() => undefined)
-      const reply = buildContextualRecoveryReply(state)
-      conversations.add(chatId, 'bot', reply)
-      await whatsapp.sendText(chatId, reply)
+      return
     }
 }
 
@@ -1060,6 +1064,29 @@ async function notifyOrderModificationRequest(chatId, orderId, customerMessage) 
     `Abrir chat: ${customer.chatUrl}`,
     `Mensaje: ${customerMessage}`,
     'El bot no lo modifico solo para evitar descoordinacion con cocina - contactar directamente.',
+  ].join('\n')
+
+  await whatsapp.sendText(targetChatId, message)
+}
+
+async function notifyOrderStatusRequest(chatId, orderId, customerMessage) {
+  const targetChatId = await resolveOwnerAlertChatId()
+  if (!targetChatId) return
+
+  const order = await findOrder(orderId).catch(() => null)
+  const customer = getCustomerContact(chatId, {
+    name: order?.customerName,
+    phone: order?.customerPhone,
+  })
+
+  const message = [
+    'Cliente consulta el estado de un pedido confirmado.',
+    `Pedido: ${order?.displayNumber || orderId}`,
+    `Cliente: ${order?.customerName || customer.name}`,
+    `Numero: ${customer.displayPhone}`,
+    `Abrir chat: ${customer.chatUrl}`,
+    `Mensaje: ${customerMessage}`,
+    'El bot no respondio para evitar informar un estado incorrecto - contactar directamente.',
   ].join('\n')
 
   await whatsapp.sendText(targetChatId, message)
@@ -1576,38 +1603,6 @@ function buildMissingFieldsReply(missingFields, { text = '', catalog = null, sta
   return `Ya tengo tu pedido anotado. Solo me falta ${pending}.`
 }
 
-function buildContextualRecoveryReply(state) {
-  if (state.awaitingPaymentProof) {
-    const orderInput = state.awaitingPaymentProof.orderInput
-    const needsLocation = orderInput.fulfillmentType === 'delivery' && !orderInput.deliveryAddress
-    if (state.awaitingPaymentProof.proofReceived && needsLocation) {
-      return 'Ya recibi tu comprobante. Solo me falta tu ubicacion normal de WhatsApp (no en tiempo real) o direccion exacta para pasar el pedido a caja.'
-    }
-
-    if (!state.awaitingPaymentProof.proofReceived) {
-      return 'Ya tengo tu pedido listo para QR. Por favor enviame el comprobante por este chat para que caja pueda revisar el pago.'
-    }
-
-    return 'Ya tengo tu comprobante y los datos del pedido. Tuve un problema pasandolo a caja, pero no necesito que me mandes todo de nuevo. Dame un momento, por favor.'
-  }
-
-  if (state.pendingOrder) {
-    return `${state.pendingOrder.summary}\n\nSigo teniendo tu pedido listo. Respondeme "Si" para confirmarlo o "No" para cancelarlo.`
-  }
-
-  if (state.orderDraft?.items?.length) {
-    const missingFields = getMissingOrderFields(state.orderDraft)
-    if (missingFields.length > 0) {
-      return buildMissingFieldsReply(missingFields, { state })
-    }
-
-    return 'Ya tengo tu pedido avanzado. Si esta correcto, respondeme "Si"; si quieres cambiar algo, dime que modificamos.'
-  }
-
-  return ORDER_FORMAT_REDIRECT_MESSAGE
-}
-
-
 // Inverso de buildOrderInput: una vez que el pedido pasa a "pendingOrder" (ya se mostro el
 // resumen y se espera "Confirmas?"), el orderDraft se limpia. Sin esto, si el cliente manda una
 // correccion en ese punto ("es doble porcion de tocino"), la IA no tiene ningun contexto del
@@ -1744,11 +1739,6 @@ function isOrderStartRequest(text) {
     burgerFamilyRegex().test(normalized) ||
     /\b(quiero|quisiera|pedido|pedir|ordenar|bbq|barbacoa|simple|doble|triple|papas|gaseosa|mocochinchi|agua|refresco)\b/.test(normalized)
   )
-}
-
-function looksLikeOrderModificationRequest(text) {
-  const normalized = normalizeText(text)
-  return isOrderStartRequest(text) || /\b(agregar|agregame|aumentar|aumentame|cambiar|cambiame|sacar|sacame|quitar|quitame|modificar|modificame|anadir)\b/.test(normalized)
 }
 
 function looksLikeConcreteOrderText(text) {
