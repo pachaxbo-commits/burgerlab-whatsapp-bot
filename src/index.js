@@ -23,6 +23,8 @@ import { formatCustomerPhone, resolveCustomerPhone } from './contact.js'
 import {
   isConfirmedOrderModificationRequest,
   isConfirmedOrderStatusRequest,
+  isPickupArrivalNotice,
+  isPostOrderCourtesyText,
   shouldAnswerAsStandaloneQuestion,
   shouldSuppressRepeatedOrderSummary,
 } from './postOrderRules.js'
@@ -303,8 +305,10 @@ async function handleIncomingMessage({ chatId, text }) {
         return
       }
 
-      if (!state.pendingOrder && !state.orderDraft?.items?.length && state.lastOrderId && isThanksText(text)) {
-        const reply = 'Con gusto, gracias a ti. Estamos atentos a tu pedido.'
+      if (!state.pendingOrder && !state.orderDraft?.items?.length && state.lastOrderId && isPostOrderCourtesyText(text)) {
+        const reply = isPickupArrivalNotice(text)
+          ? 'Con gusto, te esperamos.'
+          : 'Con gusto, gracias a ti. Estamos atentos a tu pedido.'
         conversations.add(chatId, 'bot', reply)
         await whatsapp.sendText(chatId, reply)
         return
@@ -1944,11 +1948,6 @@ function isConfirmText(text) {
 function isCancelText(text) {
   const normalized = normalizeText(text)
   return /^(no|cancelar|cancela|anular|anula|mejor no|ya no)$/.test(normalized)
-}
-
-function isThanksText(text) {
-  const normalized = normalizeText(text)
-  return /^(ok|okay|listo|gracias|muchas gracias|ok gracias|dale gracias|perfecto gracias|ya gracias)$/.test(normalized)
 }
 
 // Acuse de recibo suelto: el cliente solo esta diciendo "entendido", sin pedir nada. Ojo que

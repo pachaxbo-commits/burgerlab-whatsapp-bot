@@ -19,6 +19,33 @@ export function isConfirmedOrderModificationRequest(text) {
   return /\b(?:agreg(?:ar|ame|ale)|aument(?:ar|ame|ale)|cambi(?:ar(?:lo|la)?|ame|ale)|sac(?:ar|ame|ale)|quit(?:ar|ame|ale)|modific(?:ar(?:lo|la)?|ame)|anad(?:ir|eme)|elimin(?:ar|a)|borr(?:ar|a))\b/.test(normalized)
 }
 
+export function isPickupArrivalNotice(text) {
+  const normalized = normalizeText(text)
+  return (
+    /\b(?:ya\s+)?(?:estoy\s+)?(?:pasando|yendo|voy)(?:\s+(?:ahora|ahorita|en\s+camino|a\s+recoger|para\s+alla))?\b/.test(normalized) ||
+    /\b(?:paso|pasare)\s+(?:ahora|ahorita|en\s+un\s+rato|a\s+recoger)\b/.test(normalized)
+  )
+}
+
+/** Cierre amable posterior al pedido, sin confundir preguntas, cambios ni pedidos nuevos. */
+export function isPostOrderCourtesyText(text) {
+  const normalized = normalizeText(text)
+  if (!normalized || /\?/.test(text)) return false
+  if (isConfirmedOrderStatusRequest(normalized) || isConfirmedOrderModificationRequest(normalized)) return false
+
+  const asksSomething = /\b(?:cuanto|cuando|donde|como|puedo|podria|tienen|hay|precio|costo)\b/.test(normalized)
+  if (asksSomething) return false
+
+  const arrivalNotice = isPickupArrivalNotice(normalized)
+  const startsNewOrder = /\b(?:quiero|quisiera|necesito|dame|mandame|hacer\s+otro\s+pedido|pedido\s+nuevo|otro\s+pedido)\b/.test(normalized)
+  if (startsNewOrder && !arrivalNotice) return false
+
+  const hasThanks = /\b(?:gracias|agradezco|agradecido|agradecida)\b/.test(normalized)
+  const simpleAcknowledgement = /^(?:ok|okay|listo|perfecto|dale|entendido|claro|correcto|si|sip|sale|ya)(?:\s+gracias)?[!.]*$/.test(normalized)
+
+  return hasThanks || simpleAcknowledgement || arrivalNotice
+}
+
 export function shouldSuppressRepeatedOrderSummary(previousSummary, nextSummary, customerText = '') {
   if (!previousSummary || previousSummary !== nextSummary) return false
 
