@@ -20,7 +20,12 @@ import { understandMessage } from './gemini.js'
 import { WhatsappClient } from './whatsapp.js'
 import { applyExplicitOrderNotes, applyTargetedOrderItemChange, filterUnrequestedExtras, reconcileInitialBurgerItems } from './orderRules.js'
 import { formatCustomerPhone, resolveCustomerPhone } from './contact.js'
-import { isConfirmedOrderModificationRequest, isConfirmedOrderStatusRequest, shouldSuppressRepeatedOrderSummary } from './postOrderRules.js'
+import {
+  isConfirmedOrderModificationRequest,
+  isConfirmedOrderStatusRequest,
+  shouldAnswerAsStandaloneQuestion,
+  shouldSuppressRepeatedOrderSummary,
+} from './postOrderRules.js'
 
 assertRequiredConfig()
 await loadSettings()
@@ -470,7 +475,15 @@ async function handleIncomingMessage({ chatId, text }) {
       // items nuevos: respondela directo, sin tocar el pedido en curso/pendiente. Si no hiciera
       // esta excepcion, un pedido pendiente "absorbe" la pregunta (como ya tiene items) y en vez
       // de contestar solo vuelve a mostrar el resumen, ignorando lo que el cliente pregunto.
-      if (result.intent === 'question' && !result.items.length) {
+      const inferredCurrentFields = inferFieldsFromText(text)
+      const carriesCustomerLocation = Boolean(inferredCurrentFields.deliveryAddress) && !isRestaurantLocationRequest(text)
+      const carriesConcreteOrder = looksLikeConcreteOrderText(text) || looksLikeStructuredOrderMessage(text)
+      if (shouldAnswerAsStandaloneQuestion({
+        intent: result.intent,
+        itemCount: result.items.length,
+        carriesCustomerLocation,
+        carriesConcreteOrder,
+      })) {
         // Igual guardamos cualquier dato que la IA haya sacado de paso (ej. el cliente dijo su
         // nombre en el mismo mensaje que hizo la pregunta) - solo evitamos volver a mostrar el
         // resumen del pedido en vez de contestar lo que realmente pregunto.
@@ -1339,7 +1352,8 @@ function inferFieldsFromText(text) {
       : /\b(mixto|ambos)\b/.test(normalized)
       ? 'mixed'
       : null
-  const fulfillmentType = /\b(envio|delivery|domicilio)\b/.test(normalized)
+  const explicitlyChoosesMoto = /\b(?:si\s+)?(?:por|con)\s+(?:la\s+)?mot(?:o|ito)\b|\bmand(?:a|alo|enlo|amelo)\b[^.\n]{0,20}\bmot(?:o|ito)\b/.test(normalized)
+  const fulfillmentType = /\b(envio|delivery|domicilio)\b/.test(normalized) || explicitlyChoosesMoto
     ? 'delivery'
     : /\b(recojo|recoger|retiro|retirar|local)\b/.test(normalized)
       ? 'pickup'

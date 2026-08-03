@@ -25,7 +25,7 @@ function isBurgerProduct(product) {
 }
 
 function countBurgerMentions(text) {
-  return (normalizeText(text).match(/\b(?:bbq(?:\s+lab)?|burguer\s*lab|burger\s*lab|hamburguesas?)\b/g) || []).length
+  return (normalizeText(text).match(/\b(?:bbq(?:\s+lab)?|burguers?\s*lab|burgers?\s*lab|hamburguesas?)\b/g) || []).length
 }
 
 function findBurgerProduct(catalog, { brand, size, withFries, price }) {
@@ -175,7 +175,7 @@ function collectExtra(line, catalog, pattern, catalogPattern, itemQuantity) {
 
 function parseBurgerLine(rawLine, catalog) {
   const line = normalizeText(rawLine)
-  if (!/\b(?:bbq(?:\s+lab)?|burguer\s*lab|burger\s*lab|hamburguesas?)\b/.test(line)) return null
+  if (!/\b(?:bbq(?:\s+lab)?|burguers?\s*lab|burgers?\s*lab|hamburguesas?)\b/.test(line)) return null
 
   const quantityMatch = line.match(/^\s*(\d+|un|una|uno|dos|tres|cuatro|cinco|seis)\b/)
   const quantity = quantityFromToken(quantityMatch?.[1], 1)
@@ -219,9 +219,50 @@ function parseBurgerLine(rawLine, catalog) {
   }
 }
 
+function appendExtraFriesProduct(items, text, catalog) {
+  const normalized = normalizeText(text)
+  const quantityToken = '(\\d+|un|una|uno|dos|tres|cuatro|cinco|seis)'
+  const match = normalized.match(new RegExp(
+    `\\b(?:${quantityToken}\\s+)?(?:porcion|racion)\\s+(?:extra\\s+de\\s+|de\\s+)?papas\\b|\\b(?:${quantityToken}\\s+)?papas\\s+extra\\b`,
+  ))
+  if (!match) return items || []
+
+  const product = (catalog?.products || []).find((candidate) => {
+    const name = normalizeText(candidate.name)
+    return !isBurgerProduct(candidate) && /papas/.test(name) && /extra|porcion|racion/.test(name)
+  })
+  if (!product) return items || []
+
+  const quantity = quantityFromToken(match[1] || match[2], 1)
+  const matchesProduct = (item) => (
+    item.productId === product.id || normalizeText(item.name) === normalizeText(product.name)
+  )
+  const existing = (items || []).find(matchesProduct)
+  if (existing) {
+    return (items || []).map((item) => matchesProduct(item)
+      ? { ...item, quantity: Math.max(Number(item.quantity) || 1, quantity) }
+      : item)
+  }
+
+  return [
+    ...(items || []),
+    {
+      productId: product.id,
+      name: product.name,
+      basePrice: Number(product.price) || 0,
+      quantity,
+      note: '',
+      customerAskedTriple: false,
+      extrasForEachUnit: false,
+      options: [],
+      extras: [],
+    },
+  ]
+}
+
 export function reconcileInitialBurgerItems(aiItems, text, catalog) {
   const mentions = countBurgerMentions(text)
-  if (!mentions) return aiItems || []
+  if (!mentions) return appendExtraFriesProduct(aiItems || [], text, catalog)
 
   const parsed = String(text || '')
     .split(/\r?\n/)
@@ -230,13 +271,13 @@ export function reconcileInitialBurgerItems(aiItems, text, catalog) {
 
   // A sentence containing several burgers is left to the model; the deterministic parser is
   // intentionally used only when every mentioned burger maps to one unambiguous line.
-  if (!parsed.length || parsed.length !== mentions) return aiItems || []
+  if (!parsed.length || parsed.length !== mentions) return appendExtraFriesProduct(aiItems || [], text, catalog)
 
   const nonBurgerItems = (aiItems || []).filter((item) => {
     const product = (catalog?.products || []).find((candidate) => candidate.id === item.productId)
     return !isBurgerProduct(product || item)
   })
-  return [...parsed, ...nonBurgerItems]
+  return appendExtraFriesProduct([...parsed, ...nonBurgerItems], text, catalog)
 }
 
 function extraWasAlreadyPresent(previousItems, item, extra) {
