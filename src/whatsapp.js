@@ -17,6 +17,24 @@ const PROCESSED_MESSAGE_TTL_MS = 24 * 60 * 60 * 1000
 const PROCESSED_MESSAGE_MAX = 5000
 const MAX_INCOMING_MESSAGE_AGE_MS = 15 * 60 * 1000
 
+export class PerChatMessageQueue {
+  constructor() {
+    this.tails = new Map()
+  }
+
+  async run(chatId, task) {
+    const previous = this.tails.get(chatId) || Promise.resolve()
+    const current = previous.catch(() => undefined).then(task)
+    this.tails.set(chatId, current)
+
+    try {
+      return await current
+    } finally {
+      if (this.tails.get(chatId) === current) this.tails.delete(chatId)
+    }
+  }
+}
+
 export class WhatsappClient {
   constructor({ onMessage, testMode = false }) {
     this.onMessage = onMessage
@@ -25,6 +43,7 @@ export class WhatsappClient {
     this.processedMessageIds = new Map()
     this.processedMessagesLoaded = false
     this.processedMessageSaveTimer = null
+    this.chatMessageQueue = new PerChatMessageQueue()
     this.testMode = testMode
     this.consecutiveDisconnects = 0
   }
@@ -221,7 +240,7 @@ export class WhatsappClient {
 
       console.log(`Mensaje de ${chatId}: "${text.slice(0, 80)}" -> procesando...`)
       try {
-        await this.onMessage({ chatId, text, raw: message })
+        await this.chatMessageQueue.run(chatId, () => this.onMessage({ chatId, text, raw: message }))
         console.log(`Mensaje de ${chatId} procesado sin lanzar error.`)
       } catch (error) {
         console.error(`Error no capturado procesando mensaje de ${chatId}:`, error)
