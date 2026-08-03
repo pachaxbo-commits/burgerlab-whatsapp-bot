@@ -30,3 +30,17 @@ export function shouldSuppressRepeatedOrderSummary(previousSummary, nextSummary,
 
   return !explicitlyAskedToRepeat
 }
+
+export function shouldAnswerAsStandaloneQuestion({
+  intent,
+  itemCount = 0,
+  carriesCustomerLocation = false,
+  carriesConcreteOrder = false,
+}) {
+  return (
+    intent === 'question' &&
+    itemCount === 0 &&
+    !carriesCustomerLocation &&
+    !carriesConcreteOrder
+  )
+}

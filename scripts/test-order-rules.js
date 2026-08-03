@@ -19,6 +19,13 @@ const catalog = {
     { id: 'carne-extra', name: 'Carne extra', price: 15 },
   ],
 }
+catalog.products.push({
+  id: 'porcion-papas-extra',
+  name: 'Porcion de Papas Extra',
+  price: 6,
+  categoryId: 'extras',
+  extras: [],
+})
 
 const structured = reconcileInitialBurgerItems([], [
   '1 bbq lab doble con 2 pinas y papa',
@@ -40,6 +47,20 @@ assert.equal(structured[1].extrasForEachUnit, true)
 
 const byPrice = reconcileInitialBurgerItems([], 'Quiero una Burger Lab de 19', catalog)
 assert.equal(byPrice[0].productId, 'burger-lab-simple-sin-papas')
+
+const directUnstructuredOrder = reconcileInitialBurgerItems([], [
+  'Buenas noches disculpe quisiera realizar el siguiente pedido:',
+  'Raul Uzcategui',
+  'Delivery',
+  '75465807',
+  '2 burgers lab doble con papas + 1 porcion extra de papas',
+].join('\n'), catalog)
+assert.deepEqual(directUnstructuredOrder.map((item) => item.productId), [
+  'burger-lab-doble-con-papas',
+  'porcion-papas-extra',
+])
+assert.deepEqual(directUnstructuredOrder.map((item) => item.quantity), [2, 1])
+assert.equal(directUnstructuredOrder.reduce((sum, item) => sum + item.basePrice * item.quantity, 0), 80)
 
 const filtered = filterUnrequestedExtras([], [{
   productId: 'burger-lab-simple-con-papas',

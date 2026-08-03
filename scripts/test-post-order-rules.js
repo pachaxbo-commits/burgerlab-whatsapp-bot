@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import {
   isConfirmedOrderModificationRequest,
   isConfirmedOrderStatusRequest,
+  shouldAnswerAsStandaloneQuestion,
   shouldSuppressRepeatedOrderSummary,
 } from '../src/postOrderRules.js'
 
@@ -15,5 +16,8 @@ assert.equal(isConfirmedOrderModificationRequest('Quiero hacer otro pedido'), fa
 assert.equal(shouldSuppressRepeatedOrderSummary('resumen A', 'resumen A', 'listo'), true)
 assert.equal(shouldSuppressRepeatedOrderSummary('resumen A', 'resumen B', 'agrega tocino'), false)
 assert.equal(shouldSuppressRepeatedOrderSummary('resumen A', 'resumen A', 'Mandame otra vez el resumen'), false)
+assert.equal(shouldAnswerAsStandaloneQuestion({ intent: 'question' }), true)
+assert.equal(shouldAnswerAsStandaloneQuestion({ intent: 'question', carriesCustomerLocation: true }), false)
+assert.equal(shouldAnswerAsStandaloneQuestion({ intent: 'question', carriesConcreteOrder: true }), false)
 
 console.log('Consultas de estado y modificaciones confirmadas se derivan en silencio.')
