@@ -138,6 +138,7 @@ function normalizeState(value) {
     contactPhone: typeof value?.contactPhone === 'string' ? value.contactPhone : '',
     lastCustomerMessage: typeof value?.lastCustomerMessage === 'string' ? value.lastCustomerMessage : '',
     manualMenuInstructionsSent: value?.manualMenuInstructionsSent === true,
+    lastManualSupportAlertAt: Number(value?.lastManualSupportAlertAt) || 0,
     lastMessageAt: Number(value?.lastMessageAt) || 0,
   }
 }

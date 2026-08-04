@@ -22,7 +22,7 @@ await updateSettings({
   openHour: 0,
   closeHour: 24,
   pickupOnlyMode: false,
-  ownerAlertChatId: '',
+  ownerAlertChatId: 'support@g.us',
   ownerAlertGroupName: '',
 })
 
@@ -79,9 +79,19 @@ const beforePickupQr = sent.length
 await receive('59170000006', 'Me puedes pasar el QR?')
 assert.equal(sent.length, beforePickupQr, 'El QR de recojo queda para atencion manual.')
 
-const beforeUnknown = sent.length
-await receive('59170000007', 'Pueden hacerme una factura especial con otros datos?')
-assert.equal(sent.length, beforeUnknown, 'Una consulta fuera de la lista segura no debe responderse.')
+const beforeNormalMessages = sent.length
+await receive('59170000007', 'Para recoger')
+await receive('59170000007', 'QR por favor')
+await receive('59170000007', 'Mi nombre es Nacho')
+assert.equal(sent.length, beforeNormalMessages, 'Los datos normales del pedido no deben alertar al grupo.')
+
+const beforeExceptional = sent.length
+await receive('59170000008', 'Pueden hacerme una factura especial con otros datos?')
+assert.equal(sent.length, beforeExceptional + 1, 'Una consulta excepcional debe avisar una vez a soporte.')
+assert.equal(sent.at(-1)?.chatId, 'support@g.us')
+
+await receive('59170000008', 'Tambien necesito que incluya otro NIT')
+assert.equal(sent.length, beforeExceptional + 1, 'Soporte no debe recibir alertas repetidas del mismo chat.')
 
 console.log('Flujo manual: menu, audios, cotizacion, QR y silencios verificados.')
 await fs.rm(process.env.DATA_DIR, { recursive: true, force: true })

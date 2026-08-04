@@ -1141,8 +1141,6 @@ async function handleManualOrderEntryMessage({ chatId, text, state }) {
       const reply = 'En pedidos con delivery no enviamos el QR del restaurante. El total del pedido y el costo del envio se pagan directamente a la moto, en efectivo o por QR.'
       conversations.add(chatId, 'bot', reply)
       await whatsapp.sendText(chatId, reply)
-    } else {
-      await notifyHumanSupport(chatId, text)
     }
     return
   }
@@ -1177,7 +1175,13 @@ async function handleManualOrderEntryMessage({ chatId, text, state }) {
 
   if (isPostOrderCourtesyText(text) || isAcknowledgementText(text)) return
 
-  // Todo lo que queda fuera de la lista segura se deriva al equipo sin responder al cliente.
+  // El registro es manual: los mensajes operativos quedan en contactos recientes y no deben
+  // llenar el grupo de soporte. Solo se deriva una consulta realmente excepcional, con un
+  // intervalo por chat para evitar varias alertas seguidas sobre el mismo asunto.
+  if (!isExceptionalSupportQuestion(text)) return
+  if (Date.now() - Number(state.lastManualSupportAlertAt || 0) < 10 * 60 * 1000) return
+  state.lastManualSupportAlertAt = Date.now()
+  conversations.scheduleSave()
   await notifyHumanSupport(chatId, text)
 }
 
@@ -1246,6 +1250,11 @@ function isGeneralRestaurantLocationQuestion(text) {
   const normalized = normalizeText(text)
   if (/\b(mi ubicacion|mi direccion|te mando|te envio|ya mande)\b/.test(normalized)) return false
   return /\b(cual es|pasame|mandame|me pasas|me mandas|me pasa|me manda|necesito|quiero)\b[^.\n]{0,40}\b(ubicacion|direccion)\b/.test(normalized)
+}
+
+function isExceptionalSupportQuestion(text) {
+  const normalized = normalizeText(text)
+  return /\b(factura|facturacion|nit|alergia|alergico|alergenos|gluten|vegetariano|vegano|ingredientes?|aceite|reclamo|queja|devolucion|reembolso|reserva|evento|mayorista|corporativo|proveedor|publicidad|colaboracion|convenio|trabajo|empleo)\b/.test(normalized)
 }
 
 function formatHour(hour) {
