@@ -50,6 +50,20 @@ const beforeRepeatedMenu = sent.length
 await receive('59170000003', 'Me mandas el menu otra vez')
 assert.deepEqual(sent.slice(beforeRepeatedMenu).map((entry) => entry.type), ['image'])
 
+for (const [index, greeting] of ['Hola', 'Buenas', 'Buen dia', 'Buenas tardes', 'Buenas noches'].entries()) {
+  const beforeGreeting = sent.length
+  await receive(`5917000010${index}`, greeting)
+  assert.deepEqual(
+    sent.slice(beforeGreeting).map((entry) => entry.type),
+    ['text', 'image'],
+    `El saludo "${greeting}" debe enviar bienvenida y menu.`,
+  )
+}
+
+const beforeGreetingWithOrder = sent.length
+await receive('59170000120', 'Hola, quiero dos burger lab dobles con papas')
+assert.equal(sent.length, beforeGreetingWithOrder, 'Un saludo con pedido concreto debe quedar para caja sin respuesta.')
+
 const beforePricing = sent.length
 await receive('59170000004', 'Cuanto cuesta el delivery?')
 assert.deepEqual(sent.slice(beforePricing).map((entry) => entry.type), ['image', 'location'])

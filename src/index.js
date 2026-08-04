@@ -126,7 +126,7 @@ async function handleIncomingMessage({ chatId, text, displayName = '' }) {
     const isFirstCustomerMessage = state.messages.filter((entry) => entry.role === 'cliente').length === 1
 
     if (settings.manualOrderEntryMode) {
-      await handleManualOrderEntryMessage({ chatId, text, state, isFirstCustomerMessage })
+      await handleManualOrderEntryMessage({ chatId, text, state })
       return
     }
 
@@ -1090,7 +1090,7 @@ async function createWhatsappOrderWithRetry(orderInput) {
   }
 }
 
-async function handleManualOrderEntryMessage({ chatId, text, state, isFirstCustomerMessage }) {
+async function handleManualOrderEntryMessage({ chatId, text, state }) {
   const normalized = normalizeText(text)
 
   if (text === '[audio_recibido]') {
@@ -1150,7 +1150,7 @@ async function handleManualOrderEntryMessage({ chatId, text, state, isFirstCusto
   const concreteOrder = looksLikeManualOrderContent(text)
   const wantsMenu = isMenuRequest(text)
   const wantsToStartOrder = isGenericOrderStart(text) && !concreteOrder
-  const greetingOnly = isFirstCustomerMessage && isSimpleGreeting(text)
+  const greetingOnly = !concreteOrder && isGreetingMessage(text)
 
   if (wantsMenu || wantsToStartOrder || greetingOnly) {
     if (!state.manualMenuInstructionsSent) {
@@ -1196,9 +1196,9 @@ function isExplicitManualResetRequest(text) {
   return /\b(nuevo pedido|pedido nuevo|empezar de nuevo|cancelar pedido|borrar pedido)\b/.test(normalized)
 }
 
-function isSimpleGreeting(text) {
+function isGreetingMessage(text) {
   const normalized = normalizeText(text)
-  return /^(hola+|buenas|buen dia|buenas tardes|buenas noches|que tal|ola)[!. ]*$/.test(normalized)
+  return /^(hola+|ola|buenas(?:\s+(?:tardes|noches))?|buen dia|que tal)\b/.test(normalized)
 }
 
 function looksLikeManualOrderContent(text) {
