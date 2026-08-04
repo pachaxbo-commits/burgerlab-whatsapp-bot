@@ -71,3 +71,30 @@ export function shouldAnswerAsStandaloneQuestion({
     !carriesConcreteOrder
   )
 }
+
+/**
+ * Una consulta hecha mientras se espera la confirmacion no puede reinterpretar los productos.
+ * La IA a veces devuelve el borrador completo aun cuando el cliente solo pregunta por tiempo;
+ * esta clasificacion usa exclusivamente el mensaje nuevo para mantener el pedido inmutable.
+ */
+export function isNonEditingOrderQuestion(text) {
+  const normalized = normalizeText(text)
+  if (!normalized) return false
+  if (isConfirmedOrderModificationRequest(normalized)) return false
+
+  return (
+    /\?/.test(String(text || '')) ||
+    /\b(?:cuanto|cuando|donde|como|cual|tienen|hay|puedo|podria)\b/.test(normalized) ||
+    /\b(?:en\s+)?q(?:ue)?\s+(?:tiempo|hora|momento)\b/.test(normalized)
+  )
+}
+
+export function isPreparationTimeQuestion(text) {
+  const normalized = normalizeText(text)
+  return (
+    /\b(?:en\s+)?q(?:ue)?\s+tiempo\b/.test(normalized) ||
+    /\bcuanto\s+(?:tiempo\s+)?(?:tarda|demora|falta)\b/.test(normalized) ||
+    /\bcuando\s+(?:estaria|esta|sale|estara|queda)\b/.test(normalized) ||
+    /\ba\s+que\s+hora\s+(?:estaria|esta|sale|estara|queda)\b/.test(normalized)
+  )
+}

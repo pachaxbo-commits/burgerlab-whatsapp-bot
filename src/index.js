@@ -18,13 +18,15 @@ import {
 } from './firebase.js'
 import { understandMessage } from './gemini.js'
 import { WhatsappClient } from './whatsapp.js'
-import { applyExplicitOrderNotes, applyTargetedOrderItemChange, filterUnrequestedExtras, reconcileInitialBurgerItems } from './orderRules.js'
+import { applyExplicitOrderNotes, applyTargetedOrderItemChange, filterUnrequestedExtras, preserveItemsDuringAdditiveChange, reconcileInitialBurgerItems } from './orderRules.js'
 import { formatCustomerPhone, resolveCustomerPhone } from './contact.js'
 import {
   isConfirmedOrderModificationRequest,
   isConfirmedOrderStatusRequest,
+  isNonEditingOrderQuestion,
   isPickupArrivalNotice,
   isPostOrderCourtesyText,
+  isPreparationTimeQuestion,
   shouldAnswerAsStandaloneQuestion,
   shouldSuppressRepeatedOrderSummary,
 } from './postOrderRules.js'
@@ -353,6 +355,14 @@ async function handleIncomingMessage({ chatId, text }) {
       // Ese atajo interceptaba mensajes que la IA sabia manejar: "quiero pedir para comer ahi en
       // el restaurante" recibia el formato y se cortaba ahi, sin llegar nunca a explicarle que
       // eso se pide en caja. Ahora se decide despues, segun lo que la IA entendio.
+      const currentOrderDraft = state.orderDraft || pendingOrderToDraft(state.pendingOrder)
+      if (currentOrderDraft?.items?.length && isPreparationTimeQuestion(text) && !messageCanChangeItems(text)) {
+        const reply = 'El tiempo aproximado de preparación es de 15 a 20 minutos. Te avisamos apenas esté listo.'
+        conversations.add(chatId, 'bot', reply)
+        await whatsapp.sendText(chatId, reply)
+        return
+      }
+
       const catalog = await getCatalogForParsing()
 
       // ENTENDER es tarea de la IA, no de listas de palabras. Antes habia un "camino rapido" que
@@ -372,7 +382,7 @@ async function handleIncomingMessage({ chatId, text }) {
         message: text,
         conversation: previousMessages,
         catalog,
-        currentDraft: state.orderDraft || pendingOrderToDraft(state.pendingOrder),
+        currentDraft: currentOrderDraft,
       })
 
       // La IA avisa cuando prefiere no arriesgar una respuesta: se le pasa a una persona y el bot
@@ -390,7 +400,7 @@ async function handleIncomingMessage({ chatId, text }) {
         catalog,
       )
       const catalogItems = enforceCatalogItems(
-        interpretedItems,
+        preserveItemsDuringAdditiveChange(previousItems, interpretedItems, text),
         catalog,
       )
       const result = {
@@ -482,7 +492,14 @@ async function handleIncomingMessage({ chatId, text }) {
       const inferredCurrentFields = inferFieldsFromText(text)
       const carriesCustomerLocation = Boolean(inferredCurrentFields.deliveryAddress) && !isRestaurantLocationRequest(text)
       const carriesConcreteOrder = looksLikeConcreteOrderText(text) || looksLikeStructuredOrderMessage(text)
-      if (shouldAnswerAsStandaloneQuestion({
+      const protectsCurrentOrderQuestion = Boolean(
+        previousItems.length &&
+        isNonEditingOrderQuestion(text) &&
+        !messageCanChangeItems(text) &&
+        !carriesCustomerLocation &&
+        !carriesConcreteOrder,
+      )
+      if (protectsCurrentOrderQuestion || shouldAnswerAsStandaloneQuestion({
         intent: result.intent,
         itemCount: result.items.length,
         carriesCustomerLocation,
@@ -1211,9 +1228,17 @@ function getAllowedExtrasForProduct(product, catalog) {
 function resolveCatalogProduct(item, catalog) {
   const products = catalog?.products || []
   const itemName = normalizeText(item.name)
+  const burgerHint = getBurgerCatalogHint(`${item.productId || ''} ${item.name || ''}`)
   return (
     products.find((candidate) => candidate.id === item.productId) ||
     products.find((candidate) => normalizeText(candidate.name) === itemName) ||
+    (burgerHint
+      ? products.find((candidate) => {
+          if (candidate.categoryId !== 'hamburguesas') return false
+          const candidateHint = getBurgerCatalogHint(`${candidate.id || ''} ${candidate.name || ''}`)
+          return candidateHint === burgerHint
+        })
+      : null) ||
     (itemName
       ? products.find((candidate) => {
           const candidateName = normalizeText(candidate.name)
@@ -1222,6 +1247,15 @@ function resolveCatalogProduct(item, catalog) {
       : null) ||
     null
   )
+}
+
+function getBurgerCatalogHint(value) {
+  const normalized = normalizeText(value)
+  if (!/burger|burguer|hamburguesa|bbq|barbacoa|barbakoa/.test(normalized)) return ''
+  const brand = /\bbbq\b|barbacoa|barbakoa/.test(normalized) ? 'bbq' : 'burger-lab'
+  const size = /doble|double/.test(normalized) ? 'doble' : 'simple'
+  const fries = /sin\s+papas?/.test(normalized) ? 'sin-papas' : 'con-papas'
+  return `${brand}:${size}:${fries}`
 }
 
 function enforceCatalogItems(items, catalog) {
@@ -1462,7 +1496,27 @@ function findCatalogProduct(catalog, productId) {
 // cebolla" como "sin papas" y le cambio la hamburguesa de Bs 22 a Bs 19 - una nota nunca puede
 // cambiar el producto.
 function enforcePapasRule(previousItems, items, text, catalog) {
-  if (/\bsin\s+papas?\b/.test(normalizeText(text))) return items
+  const normalized = normalizeText(text)
+  const explicitlyWithoutFries = (
+    /\bsin\s+papas?\b/.test(normalized) ||
+    /\bno\s+(?:te\s+)?(?:dije|pedi|quiero|queria)\b[^.?!]*\bcon\s+papas?\b/.test(normalized)
+  )
+  if (explicitlyWithoutFries) {
+    const burgerItems = (items || []).filter((item) => getBurgerCatalogHint(`${item.productId || ''} ${item.name || ''}`))
+    if (burgerItems.length !== 1) return items
+
+    return (items || []).map((item) => {
+      const hint = getBurgerCatalogHint(`${item.productId || ''} ${item.name || ''}`)
+      if (!hint || item !== burgerItems[0]) return item
+      const targetHint = hint.replace(/:(?:con|sin)-papas$/, ':sin-papas')
+      const withoutFries = (catalog.products || []).find((product) => (
+        product.categoryId === 'hamburguesas' &&
+        getBurgerCatalogHint(`${product.id || ''} ${product.name || ''}`) === targetHint
+      ))
+      if (!withoutFries) return item
+      return { ...item, productId: withoutFries.id, name: withoutFries.name, basePrice: Number(withoutFries.price || 0) }
+    })
+  }
 
   return (items || []).map((item) => {
     if (!item.productId?.includes('-sin-papas')) return item

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { applyExplicitOrderNotes, applyTargetedOrderItemChange, filterUnrequestedExtras, reconcileInitialBurgerItems } from '../src/orderRules.js'
+import { applyExplicitOrderNotes, applyTargetedOrderItemChange, filterUnrequestedExtras, preserveItemsDuringAdditiveChange, reconcileInitialBurgerItems } from '../src/orderRules.js'
 
 const catalog = {
   products: [
@@ -122,5 +122,24 @@ assert.deepEqual(changedSecond.map((item) => item.quantity), [1, 1, 1])
 assert.equal(changedSecond[0].extras.length, 0)
 assert.equal(changedSecond[1].extras[0].id, 'tocino')
 assert.equal(changedSecond[2].extras.length, 0)
+
+const partialAddition = preserveItemsDuringAdditiveChange(existingOrder, [{
+  productId: 'coca-cola-300-ml',
+  name: 'Coca Cola 300 ml',
+  basePrice: 5,
+  quantity: 1,
+  extras: [],
+}], 'Agregame una Coca Cola')
+assert.equal(partialAddition.length, 4)
+assert.deepEqual(partialAddition.slice(0, 3).map((item) => item.productId), existingOrder.map((item) => item.productId))
+assert.equal(partialAddition[3].productId, 'coca-cola-300-ml')
+
+const partialModifier = preserveItemsDuringAdditiveChange(existingOrder, [{
+  ...existingOrder[1],
+  extras: [...existingOrder[1].extras, { id: 'tocino', name: 'Tocino', price: 4 }],
+}], 'Agregale tocino a la BBQ con pina')
+assert.equal(partialModifier.length, 3)
+assert.equal(partialModifier[1].extras.length, 2)
+assert.equal(partialModifier[2].extras.length, 1)
 
 console.log('Reglas de pedidos del bot verificadas.')

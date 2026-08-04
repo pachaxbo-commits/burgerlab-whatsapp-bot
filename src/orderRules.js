@@ -199,6 +199,62 @@ export function applyTargetedOrderItemChange(previousItems, aiItems, text, catal
   })
 }
 
+export function preserveItemsDuringAdditiveChange(previousItems, aiItems, text) {
+  if (!previousItems?.length || !aiItems?.length) return aiItems || previousItems || []
+
+  const normalized = normalizeText(text)
+  const isAdditive = /\b(?:agrega|agregar|agregame|agregale|aumenta|aumentar|aumentame|aumentale|anade|anadir|pon|poner|ponle|suma|sumar|ademas|otra|otro)\b/.test(normalized)
+  if (!isAdditive) return aiItems
+
+  const quantityByProduct = (items) => {
+    const totals = new Map()
+    for (const item of items || []) {
+      const key = item.productId || normalizeText(item.name)
+      totals.set(key, (totals.get(key) || 0) + Math.max(1, Number(item.quantity) || 1))
+    }
+    return totals
+  }
+
+  const previousQuantities = quantityByProduct(previousItems)
+  const nextQuantities = quantityByProduct(aiItems)
+  const keepsEveryPreviousProduct = [...previousQuantities.entries()].every(
+    ([key, quantity]) => (nextQuantities.get(key) || 0) >= quantity,
+  )
+  if (keepsEveryPreviousProduct) return aiItems
+
+  const merged = previousItems.map((item) => ({
+    ...item,
+    extras: [...(item.extras || [])],
+    options: [...(item.options || [])],
+  }))
+
+  for (const nextItem of aiItems) {
+    const matchIndex = merged.findIndex((item) => (
+      item.productId === nextItem.productId ||
+      (!item.productId && normalizeText(item.name) === normalizeText(nextItem.name))
+    ))
+    if (matchIndex < 0) {
+      merged.push(nextItem)
+      continue
+    }
+
+    const previousItem = merged[matchIndex]
+    const carriesModifierChange = (
+      JSON.stringify(nextItem.extras || []) !== JSON.stringify(previousItem.extras || []) ||
+      JSON.stringify(nextItem.options || []) !== JSON.stringify(previousItem.options || []) ||
+      normalizeText(nextItem.note) !== normalizeText(previousItem.note)
+    )
+    if (carriesModifierChange) {
+      merged[matchIndex] = {
+        ...nextItem,
+        quantity: Math.max(Number(previousItem.quantity) || 1, Number(nextItem.quantity) || 1),
+      }
+    }
+  }
+
+  return merged
+}
+
 function collectExtra(line, catalog, pattern, catalogPattern, itemQuantity) {
   const match = line.match(new RegExp(`\\b(?:(\\d+|un|una|uno|dos|tres|cuatro|cinco|seis)\\s+)?${pattern}\\b`, 'i'))
   if (!match) return { extras: [], perUnit: false }

@@ -3,7 +3,9 @@ import {
   isConfirmedOrderModificationRequest,
   isConfirmedOrderStatusRequest,
   isPickupArrivalNotice,
+  isNonEditingOrderQuestion,
   isPostOrderCourtesyText,
+  isPreparationTimeQuestion,
   shouldAnswerAsStandaloneQuestion,
   shouldSuppressRepeatedOrderSummary,
 } from '../src/postOrderRules.js'
@@ -28,5 +30,9 @@ assert.equal(shouldSuppressRepeatedOrderSummary('resumen A', 'resumen A', 'Manda
 assert.equal(shouldAnswerAsStandaloneQuestion({ intent: 'question' }), true)
 assert.equal(shouldAnswerAsStandaloneQuestion({ intent: 'question', carriesCustomerLocation: true }), false)
 assert.equal(shouldAnswerAsStandaloneQuestion({ intent: 'question', carriesConcreteOrder: true }), false)
+assert.equal(isNonEditingOrderQuestion('Ok.. En q tiempo?'), true)
+assert.equal(isPreparationTimeQuestion('Ok.. En q tiempo?'), true)
+assert.equal(isNonEditingOrderQuestion('Agregale tocino, cuanto seria?'), false)
+assert.equal(isPreparationTimeQuestion('Me agrega una coca'), false)
 
 console.log('Consultas de estado y modificaciones confirmadas se derivan en silencio.')
