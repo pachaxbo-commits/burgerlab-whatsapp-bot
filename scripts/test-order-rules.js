@@ -80,6 +80,41 @@ assert.deepEqual(directUnstructuredOrder.map((item) => item.productId), [
 assert.deepEqual(directUnstructuredOrder.map((item) => item.quantity), [2, 1])
 assert.equal(directUnstructuredOrder.reduce((sum, item) => sum + item.basePrice * item.quantity, 0), 80)
 
+const clearMultilineOrderText = [
+  '1 Burger lab doble sin cebolla caramelizada con doble tocino',
+  '1 bbq lab doble con tocino',
+  '1 bbq lab doble con piña',
+  'Las 3 con papas',
+].join('\n')
+const clearMultilineOrder = filterUnrequestedExtras(
+  [],
+  reconcileInitialBurgerItems([], clearMultilineOrderText, catalog),
+  clearMultilineOrderText,
+)
+assert.deepEqual(clearMultilineOrder.map((item) => item.productId), [
+  'burger-lab-doble-con-papas',
+  'bbq-doble-con-papas',
+  'bbq-doble-con-papas',
+])
+assert.deepEqual(clearMultilineOrder.map((item) => item.extras.map((extra) => extra.id)), [
+  ['tocino', 'tocino'],
+  ['tocino'],
+  ['pina'],
+])
+assert.equal(
+  clearMultilineOrder.reduce(
+    (sum, item) => sum + (item.basePrice + item.extras.reduce((extraSum, extra) => extraSum + extra.price, 0)) * item.quantity,
+    0,
+  ),
+  127,
+)
+const explicitlyWithoutTocino = filterUnrequestedExtras([], [{
+  productId: 'burger-lab-doble-con-papas',
+  name: 'Burger Lab DOBLE Con Papas',
+  extras: [{ id: 'tocino', name: 'Tocino', price: 4 }],
+}], 'La Burger Lab doble sin tocino')
+assert.equal(explicitlyWithoutTocino[0].extras.length, 0)
+
 const filtered = filterUnrequestedExtras([], [{
   productId: 'burger-lab-simple-con-papas',
   name: 'Burger Lab Simple Con Papas',

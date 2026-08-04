@@ -256,13 +256,21 @@ export function preserveItemsDuringAdditiveChange(previousItems, aiItems, text) 
 }
 
 function collectExtra(line, catalog, pattern, catalogPattern, itemQuantity) {
-  const match = line.match(new RegExp(`\\b(?:(\\d+|un|una|uno|dos|tres|cuatro|cinco|seis)\\s+)?${pattern}\\b`, 'i'))
+  const match = line.match(new RegExp(
+    `\\b(?:(\\d+|un|una|uno|dos|tres|cuatro|cinco|seis|doble|triple)\\s+(?:de\\s+)?)?${pattern}\\b`,
+    'i',
+  ))
   if (!match) return { extras: [], perUnit: false }
   const extra = findQuickExtra(catalog, catalogPattern)
   if (!extra) return { extras: [], perUnit: false }
 
   const hasOwnQuantity = Boolean(match[1])
-  const count = quantityFromToken(match[1], 1)
+  const quantityToken = normalizeText(match[1])
+  const count = quantityToken === 'doble'
+    ? 2
+    : quantityToken === 'triple'
+      ? 3
+      : quantityFromToken(match[1], 1)
   return {
     extras: Array.from({ length: count }, () => ({ id: extra.id, name: extra.name, price: Number(extra.price) || 0 })),
     perUnit: !hasOwnQuantity && itemQuantity > 1,
@@ -398,8 +406,10 @@ function extraMentioned(text, extraName) {
 
 function extraExplicitlyRemoved(text, extraName) {
   const normalized = normalizeText(text)
-  const name = normalizeText(extraName)
-  return new RegExp(`\\b(?:quita|quitar|saca|sacar|elimina|eliminar|borra|borrar|sin)\\b[^.\\n]{0,35}\\b${name}\\b`).test(normalized)
+  const name = normalizeText(extraName).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const removalVerb = new RegExp(`\\b(?:quita|quitar|saca|sacar|elimina|eliminar|borra|borrar)\\b[^.\\n]{0,35}\\b${name}\\b`)
+  const directlyWithout = new RegExp(`\\bsin\\s+(?:extra\\s+de\\s+)?${name}\\b`)
+  return removalVerb.test(normalized) || directlyWithout.test(normalized)
 }
 
 export function filterUnrequestedExtras(previousItems, items, text) {
