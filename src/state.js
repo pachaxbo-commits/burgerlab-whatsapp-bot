@@ -36,6 +36,16 @@ export class ConversationStore {
     return state
   }
 
+  touchContact(chatId, { displayName = '', phone = '', text = '' } = {}) {
+    const state = this.get(chatId)
+    if (displayName && !/^\+?\d+$/.test(displayName.trim())) state.contactName = displayName.trim()
+    if (phone) state.contactPhone = phone
+    if (text) state.lastCustomerMessage = text
+    state.lastMessageAt = Date.now()
+    this.scheduleSave()
+    return state
+  }
+
   isNewSession(chatId, gapMs) {
     const state = this.byChatId.get(chatId)
     if (!state || !state.lastMessageAt) return false
@@ -53,6 +63,7 @@ export class ConversationStore {
     // explicitamente "otro pedido") seguia disparando la logica de "esto es una modificacion de
     // tu pedido ya confirmado" para su proximo pedido, que es realmente uno nuevo y separado.
     state.lastOrderId = null
+    state.manualMenuInstructionsSent = false
     this.scheduleSave()
   }
 
@@ -123,6 +134,10 @@ function normalizeState(value) {
     // "una con papas" se procesa como si fuera un pedido nuevo en vez de la respuesta a la
     // pregunta que acabamos de hacer.
     pendingClarification: value?.pendingClarification || null,
+    contactName: typeof value?.contactName === 'string' ? value.contactName : '',
+    contactPhone: typeof value?.contactPhone === 'string' ? value.contactPhone : '',
+    lastCustomerMessage: typeof value?.lastCustomerMessage === 'string' ? value.lastCustomerMessage : '',
+    manualMenuInstructionsSent: value?.manualMenuInstructionsSent === true,
     lastMessageAt: Number(value?.lastMessageAt) || 0,
   }
 }

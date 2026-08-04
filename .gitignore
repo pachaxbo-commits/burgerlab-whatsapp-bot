@@ -7,3 +7,4 @@ bot-settings.json
 data
 *.log
 .test-data
+.test-data-manual

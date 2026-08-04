@@ -240,7 +240,12 @@ export class WhatsappClient {
 
       console.log(`Mensaje de ${chatId}: "${text.slice(0, 80)}" -> procesando...`)
       try {
-        await this.chatMessageQueue.run(chatId, () => this.onMessage({ chatId, text, raw: message }))
+        await this.chatMessageQueue.run(chatId, () => this.onMessage({
+          chatId,
+          text,
+          raw: message,
+          displayName: message.pushName || '',
+        }))
         console.log(`Mensaje de ${chatId} procesado sin lanzar error.`)
       } catch (error) {
         console.error(`Error no capturado procesando mensaje de ${chatId}:`, error)
@@ -364,6 +369,8 @@ function extractText(message) {
     const caption = msg.imageMessage.caption || ''
     return caption.trim() || '[imagen_recibida]'
   }
+
+  if (msg.audioMessage) return '[audio_recibido]'
 
   const doc = msg.documentMessage || msg.documentWithCaptionMessage?.message?.documentMessage
   if (doc) {

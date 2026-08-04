@@ -76,11 +76,17 @@ const fallbackCatalog = {
   quickExtras: [],
 }
 
-async function handleIncomingMessage({ chatId, text }) {
+async function handleIncomingMessage({ chatId, text, displayName = '' }) {
     if (!botEnabled) return
 
     await refreshTemporarySettings()
     const settings = getSettings()
+
+    conversations.touchContact(chatId, {
+      displayName,
+      phone: resolveCustomerPhone(chatId, ''),
+      text,
+    })
 
     if (!settings.autoRepliesEnabled) return
 
@@ -92,7 +98,10 @@ async function handleIncomingMessage({ chatId, text }) {
       return
     }
 
-    if (conversations.isNewSession(chatId, SESSION_GAP_MS) || isExplicitResetRequest(text)) {
+    const explicitReset = settings.manualOrderEntryMode
+      ? isExplicitManualResetRequest(text)
+      : isExplicitResetRequest(text)
+    if (conversations.isNewSession(chatId, SESSION_GAP_MS) || explicitReset) {
       conversations.resetSession(chatId)
     }
 
@@ -115,6 +124,12 @@ async function handleIncomingMessage({ chatId, text }) {
     const state = conversations.get(chatId)
     const previousPendingSummary = state.pendingOrder?.summary || ''
     const isFirstCustomerMessage = state.messages.filter((entry) => entry.role === 'cliente').length === 1
+
+    if (settings.manualOrderEntryMode) {
+      await handleManualOrderEntryMessage({ chatId, text, state, isFirstCustomerMessage })
+      return
+    }
+
     await whatsapp.startTyping(chatId)
 
     try {
@@ -647,6 +662,7 @@ app.get('/health', async (_req, res) => {
       acceptingOrdersPausedUntil: settings.acceptingOrdersPausedUntil,
       acceptingOrdersPauseReason: settings.acceptingOrdersPauseReason,
       autoRepliesEnabled: settings.autoRepliesEnabled,
+      manualOrderEntryMode: settings.manualOrderEntryMode,
       autoSendDeliveryGroupOrders: settings.autoSendDeliveryGroupOrders === true,
       whatsappConnected: whatsapp.connected,
     })
@@ -670,6 +686,27 @@ app.get('/conversations', requireToken, (_req, res) => {
     draftItems: state.orderDraft?.items || state.pendingOrder?.orderInput?.items || [],
   }))
   res.json({ ok: true, conversations: activeList })
+})
+
+app.get('/whatsapp/recent-chats', requireToken, (_req, res) => {
+  const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000
+  const chats = Array.from(conversations.byChatId.entries())
+    .filter(([chatId, state]) => chatId.endsWith('@s.whatsapp.net') && state.lastMessageAt >= cutoff)
+    .map(([chatId, state]) => ({
+      chatId,
+      phone: state.contactPhone || resolveCustomerPhone(chatId, ''),
+      name: state.contactName || '',
+      lastMessage: state.lastCustomerMessage || '',
+      lastMessageAt: state.lastMessageAt,
+      recentMessages: (state.messages || [])
+        .filter((message) => message.role === 'cliente')
+        .slice(-6)
+        .map((message) => ({ text: message.text, at: message.at })),
+    }))
+    .sort((left, right) => right.lastMessageAt - left.lastMessageAt)
+    .slice(0, 50)
+
+  res.json({ ok: true, chats })
 })
 
 app.post('/settings', requireToken, async (req, res) => {
@@ -814,6 +851,12 @@ app.post('/orders/:orderId/confirmed', requireToken, async (req, res) => {
     return
   }
 
+  if (order.whatsappConfirmationSentAt) {
+    conversations.setLastOrder(chatId, order.id)
+    res.json({ ok: true, alreadySent: true })
+    return
+  }
+
   // Mark in-memory FIRST to prevent polling from also sending
   confirmationSentViaEndpoint.add(order.id)
 
@@ -824,6 +867,7 @@ app.post('/orders/:orderId/confirmed', requireToken, async (req, res) => {
     chatId,
     buildConfirmationMessage(delayMinutes),
   )
+  conversations.setLastOrder(chatId, order.id)
   await notifyDeliveryGroupOrderConfirmed(order, delayMinutes)
 
   res.json({ ok: true })
@@ -1044,6 +1088,171 @@ async function createWhatsappOrderWithRetry(orderInput) {
     await sleep(700)
     return createWhatsappOrder(orderInput)
   }
+}
+
+async function handleManualOrderEntryMessage({ chatId, text, state, isFirstCustomerMessage }) {
+  const normalized = normalizeText(text)
+
+  if (text === '[audio_recibido]') {
+    const reply = 'Para registrar correctamente tu pedido, por favor enviamelo todo por escrito. No podemos tomar pedidos por audio.'
+    conversations.add(chatId, 'bot', reply)
+    await whatsapp.sendText(chatId, reply)
+    return
+  }
+
+  if (isDeliveryPricingRequest(text)) {
+    await sendDeliveryPricingInfo(chatId)
+    return
+  }
+
+  if (isRestaurantLocationRequest(text) || isGeneralRestaurantLocationQuestion(text)) {
+    const restaurantLocation = getRestaurantLocation()
+    await whatsapp.sendLocation(chatId, {
+      latitude: restaurantLocation.latitude,
+      longitude: restaurantLocation.longitude,
+      name: config.businessName,
+      address: config.restaurantAddress,
+    })
+    return
+  }
+
+  if (isBusinessHoursQuestion(text)) {
+    const settings = getSettings()
+    const openHour = Number(settings.openHour ?? config.openHour)
+    const closeHour = Number(settings.closeHour ?? config.closeHour)
+    const reply = `Atendemos pedidos por WhatsApp de ${formatHour(openHour)} a ${formatHour(closeHour)}.`
+    conversations.add(chatId, 'bot', reply)
+    await whatsapp.sendText(chatId, reply)
+    return
+  }
+
+  if (isDeliveryAvailabilityQuestion(text)) {
+    const settings = getSettings()
+    const reply = settings.pickupOnlyMode
+      ? settings.pickupOnlyMessage
+      : 'Si, contamos con delivery. El costo del envio se cotiza aparte y se paga directamente al repartidor.'
+    conversations.add(chatId, 'bot', reply)
+    await whatsapp.sendText(chatId, reply)
+    return
+  }
+
+  if (isQrRequest(text)) {
+    if (hasDeliveryContext(state, text)) {
+      const reply = 'En pedidos con delivery no enviamos el QR del restaurante. El total del pedido y el costo del envio se pagan directamente a la moto, en efectivo o por QR.'
+      conversations.add(chatId, 'bot', reply)
+      await whatsapp.sendText(chatId, reply)
+    } else {
+      await notifyHumanSupport(chatId, text)
+    }
+    return
+  }
+
+  const concreteOrder = looksLikeManualOrderContent(text)
+  const wantsMenu = isMenuRequest(text)
+  const wantsToStartOrder = isGenericOrderStart(text) && !concreteOrder
+  const greetingOnly = isFirstCustomerMessage && isSimpleGreeting(text)
+
+  if (wantsMenu || wantsToStartOrder || greetingOnly) {
+    if (!state.manualMenuInstructionsSent) {
+      const instructions = buildOrderTemplateMessage()
+      state.manualMenuInstructionsSent = true
+      conversations.scheduleSave()
+      conversations.add(chatId, 'bot', instructions)
+      await whatsapp.sendText(chatId, instructions)
+    }
+    await whatsapp.sendImage(chatId, menuImagePath, '')
+    return
+  }
+
+  // Pedidos, ubicaciones del cliente, comprobantes y cambios quedan para caja. El bot guarda el
+  // chat reciente, pero no interpreta ni contesta para no alterar cantidades o productos.
+  if (concreteOrder && getSettings().pickupOnlyMode && hasDeliveryContext(state, text)) {
+    const reply = getSettings().pickupOnlyMessage
+    conversations.add(chatId, 'bot', reply)
+    await whatsapp.sendText(chatId, reply)
+    return
+  }
+
+  if (concreteOrder || isCustomerLocationMessage(text) || isPaymentProofMessage(text)) return
+
+  if (isPostOrderCourtesyText(text) || isAcknowledgementText(text)) return
+
+  // Todo lo que queda fuera de la lista segura se deriva al equipo sin responder al cliente.
+  await notifyHumanSupport(chatId, text)
+}
+
+function isMenuRequest(text) {
+  const normalized = normalizeText(text)
+  return /\b(menu|carta|productos|precios|que tienen|que venden)\b/.test(normalized)
+}
+
+function isGenericOrderStart(text) {
+  const normalized = normalizeText(text)
+  return /\b(quiero|quisiera|deseo|necesito|voy a|puedo)\b[^.\n]{0,35}\b(hacer|realizar|poner|pedir|pedido)\b|\bquiero pedir\b/.test(normalized)
+}
+
+function isExplicitManualResetRequest(text) {
+  const normalized = normalizeText(text)
+  return /\b(nuevo pedido|pedido nuevo|empezar de nuevo|cancelar pedido|borrar pedido)\b/.test(normalized)
+}
+
+function isSimpleGreeting(text) {
+  const normalized = normalizeText(text)
+  return /^(hola+|buenas|buen dia|buenas tardes|buenas noches|que tal|ola)[!. ]*$/.test(normalized)
+}
+
+function looksLikeManualOrderContent(text) {
+  const normalized = normalizeText(text)
+  if (text === '[imagen_recibida]' || text === '[comprobante_recibido]') return true
+  const hasProduct = /\b(burger|burguer|hamburguesa|bbq|barbacoa|papas|tocino|pina|coca|fanta|sprite|agua|mocochinchi|jamaica|tamarindo|refresco|helado)\b/.test(normalized)
+  const hasOrderVerb = /\b(quiero|quisiera|dame|deme|pedido|pedir|anade|agrega|aumenta|quita|cambia|modifica|sin)\b/.test(normalized)
+  const structured = text.split(/\r?\n/).filter((line) => line.trim()).length >= 3
+  return hasProduct || (structured && hasOrderVerb)
+}
+
+function isBusinessHoursQuestion(text) {
+  const normalized = normalizeText(text)
+  return /\b(horario|hora de apertura|hora abren|a que hora abren|hasta que hora|cuando abren|cuando cierran|a que hora cierran)\b/.test(normalized)
+}
+
+function isDeliveryAvailabilityQuestion(text) {
+  const normalized = normalizeText(text)
+  return /\b(tienen|hay|hacen|cuentan con|manejan)\b[^.\n]{0,25}\b(delivery|envio|moto)\b/.test(normalized)
+}
+
+function isQrRequest(text) {
+  const normalized = normalizeText(text)
+  return /\b(qr|codigo qr)\b/.test(normalized) && /\b(pagar|pago|pasame|mandame|envia|quiero|puedo|qr)\b/.test(normalized)
+}
+
+function hasDeliveryContext(state, text) {
+  const recentCustomerText = (state.messages || [])
+    .filter((message) => message.role === 'cliente')
+    .slice(-6)
+    .map((message) => message.text)
+    .join(' ')
+  const normalized = normalizeText(`${recentCustomerText} ${text}`)
+  const lastPickup = Math.max(normalized.lastIndexOf('recojo'), normalized.lastIndexOf('recoger'), normalized.lastIndexOf('retiro'))
+  const lastDelivery = Math.max(normalized.lastIndexOf('delivery'), normalized.lastIndexOf('envio'), normalized.lastIndexOf('moto'))
+  return lastDelivery >= 0 && lastDelivery > lastPickup
+}
+
+function isCustomerLocationMessage(text) {
+  const normalized = normalizeText(text)
+  return /maps\.google\.com|maps\.app\.goo\.gl|ubicacion de whatsapp|\b(mi ubicacion|mi direccion|vivo en|entregar en)\b/.test(normalized)
+}
+
+function isGeneralRestaurantLocationQuestion(text) {
+  const normalized = normalizeText(text)
+  if (/\b(mi ubicacion|mi direccion|te mando|te envio|ya mande)\b/.test(normalized)) return false
+  return /\b(cual es|pasame|mandame|me pasas|me mandas|me pasa|me manda|necesito|quiero)\b[^.\n]{0,40}\b(ubicacion|direccion)\b/.test(normalized)
+}
+
+function formatHour(hour) {
+  const normalized = ((Number(hour) % 24) + 24) % 24
+  const period = normalized >= 12 ? 'pm' : 'am'
+  const display = normalized % 12 || 12
+  return `${display}:00 ${period}`
 }
 
 async function sendDeliveryPricingInfo(chatId) {
