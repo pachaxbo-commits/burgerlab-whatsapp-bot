@@ -90,14 +90,6 @@ async function handleIncomingMessage({ chatId, text, displayName = '' }) {
 
     if (!settings.autoRepliesEnabled) return
 
-    if (!acceptingOrders) {
-      await whatsapp.sendText(
-        chatId,
-        settings.pausedOrdersMessage,
-      )
-      return
-    }
-
     const explicitReset = settings.manualOrderEntryMode
       ? isExplicitManualResetRequest(text)
       : isExplicitResetRequest(text)
@@ -106,7 +98,8 @@ async function handleIncomingMessage({ chatId, text, displayName = '' }) {
     }
 
     if (!isWithinBusinessHours()) {
-      if (isExplicitResetRequest(text)) {
+      if (settings.manualOrderEntryMode && await handleClosedManualInformationMessage({ chatId, text })) return
+      if (explicitReset) {
         await whatsapp.sendText(
           chatId,
           `Memoria de prueba reiniciada con exito.\n\n${settings.closedMessage}`,
@@ -116,6 +109,14 @@ async function handleIncomingMessage({ chatId, text, displayName = '' }) {
       await whatsapp.sendText(
         chatId,
         settings.closedMessage,
+      )
+      return
+    }
+
+    if (!acceptingOrders) {
+      await whatsapp.sendText(
+        chatId,
+        settings.pausedOrdersMessage,
       )
       return
     }
@@ -1183,6 +1184,34 @@ async function handleManualOrderEntryMessage({ chatId, text, state }) {
   state.lastManualSupportAlertAt = Date.now()
   conversations.scheduleSave()
   await notifyHumanSupport(chatId, text)
+}
+
+async function handleClosedManualInformationMessage({ chatId, text }) {
+  if (isMenuRequest(text)) {
+    await whatsapp.sendImage(chatId, menuImagePath, '')
+    return true
+  }
+
+  if (isBusinessHoursQuestion(text)) {
+    const settings = getSettings()
+    const openHour = Number(settings.openHour ?? config.openHour)
+    const closeHour = Number(settings.closeHour ?? config.closeHour)
+    await whatsapp.sendText(chatId, `Atendemos pedidos por WhatsApp de ${formatHour(openHour)} a ${formatHour(closeHour)}.`)
+    return true
+  }
+
+  if (isRestaurantLocationRequest(text) || isGeneralRestaurantLocationQuestion(text)) {
+    const restaurantLocation = getRestaurantLocation()
+    await whatsapp.sendLocation(chatId, {
+      latitude: restaurantLocation.latitude,
+      longitude: restaurantLocation.longitude,
+      name: config.businessName,
+      address: config.restaurantAddress,
+    })
+    return true
+  }
+
+  return false
 }
 
 function isMenuRequest(text) {

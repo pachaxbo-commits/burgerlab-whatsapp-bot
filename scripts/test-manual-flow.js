@@ -93,5 +93,25 @@ assert.equal(sent.at(-1)?.chatId, 'support@g.us')
 await receive('59170000008', 'Tambien necesito que incluya otro NIT')
 assert.equal(sent.length, beforeExceptional + 1, 'Soporte no debe recibir alertas repetidas del mismo chat.')
 
+await updateSettings({ openHour: 0, closeHour: 0 })
+
+const beforeClosedMenu = sent.length
+await receive('59170000021', 'Me mandas el menu?')
+assert.deepEqual(sent.slice(beforeClosedMenu).map((entry) => entry.type), ['image'], 'Fuera de horario el menu se envia sin el aviso de cierre.')
+
+const beforeClosedHours = sent.length
+await receive('59170000022', 'Hasta que hora atienden?')
+assert.deepEqual(sent.slice(beforeClosedHours).map((entry) => entry.type), ['text'])
+assert.match(sent.at(-1)?.text || '', /atendemos pedidos/i)
+
+const beforeClosedLocation = sent.length
+await receive('59170000023', 'Me mandas la ubicacion del restaurante?')
+assert.deepEqual(sent.slice(beforeClosedLocation).map((entry) => entry.type), ['location'])
+
+const beforeClosedOrder = sent.length
+await receive('59170000024', 'Quiero dos burger lab con papas')
+assert.deepEqual(sent.slice(beforeClosedOrder).map((entry) => entry.type), ['text'])
+assert.match(sent.at(-1)?.text || '', /horario/i, 'Fuera de horario un pedido debe recibir el aviso de cierre.')
+
 console.log('Flujo manual: menu, audios, cotizacion, QR y silencios verificados.')
 await fs.rm(process.env.DATA_DIR, { recursive: true, force: true })
