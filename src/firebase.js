@@ -224,6 +224,45 @@ export async function findOrder(orderId) {
   return null
 }
 
+// Ultimo pedido del dia de ese cliente, para poder contestarle cuanto tiene que pagar sin que
+// nadie tenga que buscarlo a mano. Se lee tal cual quedo cargado en caja: el bot no calcula nada.
+export async function getLatestOrderForCustomer({ chatId, phone }) {
+  const todayKey = getTodayKey()
+  const snap = await db
+    .collection('restaurants')
+    .doc(config.restaurantId)
+    .collection('days')
+    .doc(todayKey)
+    .collection('orders')
+    .limit(200)
+    .get()
+
+  const digits = String(phone || '').replace(/\D/g, '')
+  const chatDigits = String(chatId || '').replace(/\D/g, '')
+
+  const matches = snap.docs
+    .map((doc) => ({ id: doc.id, dayKey: todayKey, ...doc.data() }))
+    .filter((order) => order.status !== 'cancelled')
+    .filter((order) => {
+      if (chatId && order.whatsappChatId === chatId) return true
+      const orderDigits = String(order.customerPhone || '').replace(/\D/g, '')
+      if (!orderDigits) return false
+      // Los numeros se guardan con y sin codigo de pais segun quien los cargue, asi que se
+      // comparan por el final: 59171234567 y 71234567 son el mismo cliente.
+      const candidate = digits || chatDigits
+      if (!candidate) return false
+      const corto = orderDigits.length <= candidate.length ? orderDigits : candidate
+      const largo = orderDigits.length <= candidate.length ? candidate : orderDigits
+      return corto.length >= 7 && largo.endsWith(corto)
+    })
+
+  if (matches.length === 0) return null
+
+  const toMillis = (value) => (value?.toMillis ? value.toMillis() : new Date(value || 0).getTime() || 0)
+  matches.sort((left, right) => toMillis(right.createdAt) - toMillis(left.createdAt))
+  return matches[0]
+}
+
 export async function getWhatsappOrdersPendingConfirmationNotice() {
   const todayKey = getTodayKey()
   const snap = await db
@@ -242,7 +281,17 @@ export async function getWhatsappOrdersPendingConfirmationNotice() {
     .filter((order) => order.whatsappChatId || order.customerPhone)
 }
 
-export async function getWhatsappDeliveryOrdersPendingDispatchNotice() {
+// Pedidos ya entregados a los que todavia les falta el aviso al cliente.
+//
+// Antes esta funcion dejaba fuera dos casos y en los dos el cliente no recibia nada, sin ningun
+// error visible en caja:
+//   1) Los pedidos para RECOGER. Solo pasaban los de delivery, asi que quien pedia para recoger
+//      nunca se enteraba de que su pedido ya estaba listo.
+//   2) Los entregados fuera de la "ventana" createdAt + tiempo estimado + 10 min. Un pedido
+//      cargado a mano a las 19:00 y entregado 19:35 quedaba fuera y el aviso se descartaba en
+//      silencio. Esa ventana sobra: quien pulsa "Entregado" lo esta diciendo a proposito, y el
+//      filtro de deliveredAt reciente ya evita avisos por cambios viejos.
+export async function getWhatsappOrdersPendingDispatchNotice() {
   const todayKey = getTodayKey()
   const snap = await db
     .collection('restaurants')
@@ -257,11 +306,10 @@ export async function getWhatsappDeliveryOrdersPendingDispatchNotice() {
   return snap.docs
     .map((doc) => ({ id: doc.id, dayKey: todayKey, ...doc.data() }))
     .filter((order) => order.orderSource === 'whatsapp')
-    .filter((order) => order.fulfillmentType === 'delivery')
+    .filter((order) => order.fulfillmentType === 'delivery' || order.fulfillmentType === 'pickup')
     .filter((order) => !order.whatsappDispatchSentAt)
     .filter((order) => !order.suppressWhatsappDispatchNotice)
-    .filter((order) => isRecentTimestamp(order.deliveredAt, 15 * 60 * 1000))
-    .filter((order) => order.forceWhatsappDispatchNotice || isWithinDispatchNoticeWindow(order))
+    .filter((order) => isRecentTimestamp(order.deliveredAt, 30 * 60 * 1000))
     .filter((order) => order.whatsappChatId || order.customerPhone)
 }
 
@@ -306,15 +354,6 @@ function buildPendingPayment(method) {
 function isRecentTimestamp(value, maxAgeMs) {
   const millis = value?.toMillis ? value.toMillis() : new Date(value || 0).getTime()
   return Number.isFinite(millis) && Date.now() - millis <= maxAgeMs
-}
-
-function isWithinDispatchNoticeWindow(order) {
-  const createdAt = order.createdAt?.toMillis ? order.createdAt.toMillis() : new Date(order.createdAt || 0).getTime()
-  const deliveredAt = order.deliveredAt?.toMillis ? order.deliveredAt.toMillis() : new Date(order.deliveredAt || 0).getTime()
-  const delayMinutes = Number(order.estimatedDelay || 10)
-  const graceMs = 10 * 60 * 1000
-  if (!Number.isFinite(createdAt) && Number.isFinite(deliveredAt)) return true
-  return Number.isFinite(createdAt) && Number.isFinite(deliveredAt) && deliveredAt <= createdAt + delayMinutes * 60 * 1000 + graceMs
 }
 
 // El dia se calcula SIEMPRE en la zona horaria del restaurante, nunca con la hora local del

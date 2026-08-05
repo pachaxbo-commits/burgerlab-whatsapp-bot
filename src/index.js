@@ -10,7 +10,8 @@ import {
   createWhatsappOrder,
   findOrder,
   getWhatsappOrdersPendingConfirmationNotice,
-  getWhatsappDeliveryOrdersPendingDispatchNotice,
+  getWhatsappOrdersPendingDispatchNotice,
+  getLatestOrderForCustomer,
   markWhatsappConfirmationSent,
   markWhatsappDispatchSent,
   testFirestoreWrite,
@@ -1137,6 +1138,8 @@ async function handleManualOrderEntryMessage({ chatId, text, state }) {
     return
   }
 
+  if (isOrderTotalQuestion(text) && (await replyWithRegisteredOrderTotal({ chatId, state }))) return
+
   if (isQrRequest(text)) {
     if (hasDeliveryContext(state, text)) {
       const reply = 'En pedidos con delivery no enviamos el QR del restaurante. El total del pedido y el costo del envio se pagan directamente a la moto, en efectivo o por QR.'
@@ -1184,6 +1187,50 @@ async function handleManualOrderEntryMessage({ chatId, text, state }) {
   state.lastManualSupportAlertAt = Date.now()
   conversations.scheduleSave()
   await notifyHumanSupport(chatId, text)
+}
+
+// "cuanto es", "cuanto me sale", "cual es el total"... Se pide que la frase hable de plata: si
+// solo dice "cuanto falta" (tiempo) no entra aca.
+function isOrderTotalQuestion(text) {
+  const normalized = normalizeText(text)
+  if (!/\b(cuanto|cuantos|total|monto|precio|cuenta)\b/.test(normalized)) return false
+  if (/\b(demora|tarda|falta para|minutos|tiempo|rato)\b/.test(normalized)) return false
+  return /\b(total|monto|precio|cuenta|es|sale|seria|debo|pago|pagar|salio|cuesta|vale)\b/.test(normalized)
+}
+
+// Contesta el total leyendo el pedido tal cual quedo cargado en caja. Si no hay pedido registrado
+// devuelve false y el mensaje sigue su curso normal: preferimos no contestar antes que inventar
+// una cifra.
+async function replyWithRegisteredOrderTotal({ chatId, state }) {
+  let order = null
+  try {
+    order = await getLatestOrderForCustomer({ chatId, phone: chatIdToPhone(chatId) })
+  } catch (error) {
+    console.error('No se pudo leer el pedido para responder el total:', error)
+    return false
+  }
+
+  if (!order || !Number.isFinite(Number(order.total)) || Number(order.total) <= 0) return false
+
+  const lines = [`El total de tu pedido es Bs ${Number(order.total)}.`]
+
+  if (order.paymentStatus === 'paid') {
+    lines.push('Ya figura como pagado, no tienes nada pendiente.')
+  } else if (order.fulfillmentType === 'delivery') {
+    lines.push('Ese monto lo pagas directo a la moto, en efectivo o por QR. El envio se cotiza aparte y tambien se paga a la moto.')
+  } else {
+    lines.push('Lo puedes pagar al momento de recoger tu pedido, en efectivo o por QR.')
+  }
+
+  const reply = lines.join(' ')
+  conversations.add(chatId, 'bot', reply)
+  await whatsapp.sendText(chatId, reply)
+  if (state) conversations.scheduleSave()
+  return true
+}
+
+function chatIdToPhone(chatId) {
+  return String(chatId || '').split('@')[0].replace(/\D/g, '')
 }
 
 async function handleClosedManualInformationMessage({ chatId, text }) {
@@ -2186,7 +2233,7 @@ function startConfirmationNoticePolling() {
   }
 
   const check = async () => {
-    if (isChecking || !botEnabled || !whatsapp.connected || Date.now() < firestoreBackoffUntil || !isWithinBusinessHours()) return
+    if (isChecking || !botEnabled || !whatsapp.connected || Date.now() < firestoreBackoffUntil || !isWithinNoticePollingWindow()) return
     isChecking = true
 
     try {
@@ -2209,15 +2256,12 @@ function startConfirmationNoticePolling() {
         await notifyDeliveryGroupOrderConfirmed(order, delayMinutes)
       }
 
-      const dispatchOrders = await getWhatsappDeliveryOrdersPendingDispatchNotice()
+      const dispatchOrders = await getWhatsappOrdersPendingDispatchNotice()
       for (const order of dispatchOrders) {
         const chatId = order.whatsappChatId || phoneToChatId(order.customerPhone)
         if (!chatId) continue
 
-        await whatsapp.sendText(
-          chatId,
-          'Su moto ya esta en camino. Por favor, este atento al telefono para recibir su pedido. Gracias por pedir en Burger Lab.',
-        )
+        await whatsapp.sendText(chatId, buildDispatchMessage(order))
         await markWhatsappDispatchSent(order)
       }
       registerFirestoreSuccess()
@@ -2235,6 +2279,15 @@ function startConfirmationNoticePolling() {
 
 function buildConfirmationMessage(delayMinutes) {
   return `Listo, tu pedido ya fue confirmado. Sale aproximadamente en ${delayMinutes} minutos.`
+}
+
+// El aviso de "Entregado" tiene que decir cosas distintas segun como recibe el cliente: a quien
+// pidio para recoger no se le puede decir que salio la moto.
+function buildDispatchMessage(order) {
+  if (order.fulfillmentType === 'pickup') {
+    return 'Tu pedido ya esta listo para recoger en el restaurante. Te esperamos. Gracias por pedir en Burger Lab.'
+  }
+  return 'Su moto ya esta en camino. Por favor, este atento al telefono para recibir su pedido. Gracias por pedir en Burger Lab.'
 }
 
 function normalizeText(text) {
@@ -2328,4 +2381,28 @@ function isWithinBusinessHours(now = new Date()) {
   )
 
   return hour >= openHour && hour < closeHour
+}
+
+// Los avisos de caja (pedido confirmado / pedido entregado) no dependen de que el cliente pueda
+// escribir: dependen de que quede trabajo en curso. Los ultimos pedidos de la noche se entregan
+// despues de la hora de cierre, y con el horario estricto esos avisos se descartaban en silencio.
+// Se da una hora de margen despues de cerrar, que es lo que tarda en salir la ultima tanda.
+const CIERRE_MARGEN_AVISOS_HORAS = 1
+
+function isWithinNoticePollingWindow(now = new Date()) {
+  if (isWithinBusinessHours(now)) return true
+
+  const settings = getSettings()
+  const openHour = typeof settings.openHour === 'number' ? settings.openHour : config.openHour
+  const closeHour = typeof settings.closeHour === 'number' ? settings.closeHour : config.closeHour
+
+  const hour = Number(
+    new Intl.DateTimeFormat('en-US', {
+      hour: 'numeric',
+      hour12: false,
+      timeZone: config.timezone,
+    }).format(now),
+  )
+
+  return hour >= closeHour && hour < closeHour + CIERRE_MARGEN_AVISOS_HORAS && closeHour > openHour
 }
