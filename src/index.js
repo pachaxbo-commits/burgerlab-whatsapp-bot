@@ -10,7 +10,7 @@ import {
   createWhatsappOrder,
   findOrder,
   getWhatsappOrdersPendingConfirmationNotice,
-  getWhatsappOrdersPendingDispatchNotice,
+  getWhatsappDeliveryOrdersPendingDispatchNotice,
   getLatestOrderForCustomer,
   markWhatsappConfirmationSent,
   markWhatsappDispatchSent,
@@ -2256,12 +2256,15 @@ function startConfirmationNoticePolling() {
         await notifyDeliveryGroupOrderConfirmed(order, delayMinutes)
       }
 
-      const dispatchOrders = await getWhatsappOrdersPendingDispatchNotice()
+      const dispatchOrders = await getWhatsappDeliveryOrdersPendingDispatchNotice()
       for (const order of dispatchOrders) {
         const chatId = order.whatsappChatId || phoneToChatId(order.customerPhone)
         if (!chatId) continue
 
-        await whatsapp.sendText(chatId, buildDispatchMessage(order))
+        await whatsapp.sendText(
+          chatId,
+          'Su moto ya esta en camino. Por favor, este atento al telefono para recibir su pedido. Gracias por pedir en Burger Lab.',
+        )
         await markWhatsappDispatchSent(order)
       }
       registerFirestoreSuccess()
@@ -2279,15 +2282,6 @@ function startConfirmationNoticePolling() {
 
 function buildConfirmationMessage(delayMinutes) {
   return `Listo, tu pedido ya fue confirmado. Sale aproximadamente en ${delayMinutes} minutos.`
-}
-
-// El aviso de "Entregado" tiene que decir cosas distintas segun como recibe el cliente: a quien
-// pidio para recoger no se le puede decir que salio la moto.
-function buildDispatchMessage(order) {
-  if (order.fulfillmentType === 'pickup') {
-    return 'Tu pedido ya esta listo para recoger en el restaurante. Te esperamos. Gracias por pedir en Burger Lab.'
-  }
-  return 'Su moto ya esta en camino. Por favor, este atento al telefono para recibir su pedido. Gracias por pedir en Burger Lab.'
 }
 
 function normalizeText(text) {

@@ -281,17 +281,16 @@ export async function getWhatsappOrdersPendingConfirmationNotice() {
     .filter((order) => order.whatsappChatId || order.customerPhone)
 }
 
-// Pedidos ya entregados a los que todavia les falta el aviso al cliente.
+// Deliveries ya marcados como entregados a los que todavia les falta el aviso de "la moto salio".
+// Solo delivery: a quien pide para recoger ya se le avisa al confirmar el pedido y no hay moto de
+// la cual avisar.
 //
-// Antes esta funcion dejaba fuera dos casos y en los dos el cliente no recibia nada, sin ningun
-// error visible en caja:
-//   1) Los pedidos para RECOGER. Solo pasaban los de delivery, asi que quien pedia para recoger
-//      nunca se enteraba de que su pedido ya estaba listo.
-//   2) Los entregados fuera de la "ventana" createdAt + tiempo estimado + 10 min. Un pedido
-//      cargado a mano a las 19:00 y entregado 19:35 quedaba fuera y el aviso se descartaba en
-//      silencio. Esa ventana sobra: quien pulsa "Entregado" lo esta diciendo a proposito, y el
-//      filtro de deliveredAt reciente ya evita avisos por cambios viejos.
-export async function getWhatsappOrdersPendingDispatchNotice() {
+// Antes esta funcion tambien exigia que la entrega cayera dentro de la ventana
+// createdAt + tiempo estimado + 10 min. Un pedido cargado a mano a las 19:00 y entregado 19:35
+// quedaba fuera y el aviso se descartaba en silencio, sin ningun error visible en caja. Esa
+// ventana sobra: quien pulsa "Entregado" lo esta diciendo a proposito, y el filtro de deliveredAt
+// reciente ya evita avisos por cambios viejos.
+export async function getWhatsappDeliveryOrdersPendingDispatchNotice() {
   const todayKey = getTodayKey()
   const snap = await db
     .collection('restaurants')
@@ -306,7 +305,7 @@ export async function getWhatsappOrdersPendingDispatchNotice() {
   return snap.docs
     .map((doc) => ({ id: doc.id, dayKey: todayKey, ...doc.data() }))
     .filter((order) => order.orderSource === 'whatsapp')
-    .filter((order) => order.fulfillmentType === 'delivery' || order.fulfillmentType === 'pickup')
+    .filter((order) => order.fulfillmentType === 'delivery')
     .filter((order) => !order.whatsappDispatchSentAt)
     .filter((order) => !order.suppressWhatsappDispatchNotice)
     .filter((order) => isRecentTimestamp(order.deliveredAt, 30 * 60 * 1000))
