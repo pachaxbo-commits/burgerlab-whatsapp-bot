@@ -913,6 +913,68 @@ app.post('/admin/assets/:clave/reset', requireToken, async (req, res) => {
   }
 })
 
+// Saca latitud y longitud de un enlace de Google Maps pegado tal cual. Se hace en el servidor
+// porque los enlaces cortos (maps.app.goo.gl) no traen las coordenadas: hay que seguir la
+// redireccion, y el navegador no puede hacerlo por las reglas de origen cruzado.
+function coordenadasDesdeUrl(url) {
+  // El orden importa. "!3d...!4d..." es el pin del lugar; "@lat,lng" es el centro del mapa, que
+  // puede estar corrido si la persona movio la vista antes de copiar el enlace.
+  const patrones = [
+    /!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/,
+    /[?&](?:q|query|destination|ll|center)=(-?\d+\.\d+),\s*(-?\d+\.\d+)/,
+    /@(-?\d+\.\d+),(-?\d+\.\d+)/,
+    /\/(-?\d+\.\d+),(-?\d+\.\d+)/,
+  ]
+  for (const patron of patrones) {
+    const encontrado = patron.exec(url)
+    if (encontrado) return { latitude: Number(encontrado[1]), longitude: Number(encontrado[2]) }
+  }
+  return null
+}
+
+async function seguirRedirecciones(url, saltos = 5) {
+  let actual = url
+  for (let i = 0; i < saltos; i += 1) {
+    const respuesta = await fetch(actual, { redirect: 'manual' })
+    const siguiente = respuesta.headers.get('location')
+    if (!siguiente) return respuesta.url || actual
+    actual = new URL(siguiente, actual).toString()
+  }
+  return actual
+}
+
+app.post('/admin/maps-link', requireToken, async (req, res) => {
+  const texto = String(req.body?.url || '').trim()
+  // La gente comparte el enlace con texto alrededor ("Mira: https://...") y pegan todo.
+  const encontrado = /https?:\/\/\S+/i.exec(texto)
+  if (!encontrado) {
+    res.status(400).json({ ok: false, error: 'Pega el enlace completo de Google Maps.' })
+    return
+  }
+
+  let url = encontrado[0]
+  let coords = coordenadasDesdeUrl(url)
+
+  if (!coords) {
+    try {
+      url = await seguirRedirecciones(url)
+      coords = coordenadasDesdeUrl(url)
+    } catch (error) {
+      console.warn('No se pudo abrir el enlace de Google Maps:', error.message)
+    }
+  }
+
+  if (!coords || !Number.isFinite(coords.latitude) || !Number.isFinite(coords.longitude)) {
+    res.status(422).json({
+      ok: false,
+      error: 'Ese enlace no trae la ubicacion. Abrelo en Google Maps, toca Compartir y copia el enlace del lugar.',
+    })
+    return
+  }
+
+  res.json({ ok: true, latitude: String(coords.latitude), longitude: String(coords.longitude) })
+})
+
 app.get('/whatsapp/groups', requireToken, async (_req, res) => {
   const groups = await whatsapp.listGroups()
   res.json({ ok: true, groups })
