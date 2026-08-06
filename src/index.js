@@ -1154,15 +1154,23 @@ async function handleManualOrderEntryMessage({ chatId, text, state }) {
   const wantsToStartOrder = isGenericOrderStart(text) && !concreteOrder
   const greetingOnly = !concreteOrder && isGreetingMessage(text)
 
-  if (wantsMenu || wantsToStartOrder || greetingOnly) {
-    if (!state.manualMenuInstructionsSent) {
-      const instructions = buildOrderTemplateMessage()
-      state.manualMenuInstructionsSent = true
-      conversations.scheduleSave()
-      conversations.add(chatId, 'bot', instructions)
-      await whatsapp.sendText(chatId, instructions)
-    }
+  // Si el cliente PIDE el menu, se le manda siempre: es una peticion directa y repetirla es lo
+  // que espera. El saludo y el "quiero hacer un pedido" mandan el instructivo y el menu una sola
+  // vez por conversacion. Antes la imagen se enviaba fuera del candado, asi que cada "hola" o
+  // "buenas noches" de un cliente que ya estaba pidiendo le volvia a llenar el chat con el menu.
+  // La sesion se reinicia sola a los 45 minutos sin escribir, asi que quien vuelve mas tarde lo
+  // recibe de nuevo.
+  if (wantsMenu) {
+    if (!state.manualMenuInstructionsSent) await sendManualOrderInstructions({ chatId, state })
     await whatsapp.sendImage(chatId, menuImagePath, '')
+    return
+  }
+
+  if (wantsToStartOrder || greetingOnly) {
+    if (!state.manualMenuInstructionsSent) {
+      await sendManualOrderInstructions({ chatId, state })
+      await whatsapp.sendImage(chatId, menuImagePath, '')
+    }
     return
   }
 
@@ -1233,6 +1241,14 @@ function chatIdToPhone(chatId) {
   return String(chatId || '').split('@')[0].replace(/\D/g, '')
 }
 
+async function sendManualOrderInstructions({ chatId, state }) {
+  const instructions = buildOrderTemplateMessage()
+  state.manualMenuInstructionsSent = true
+  conversations.scheduleSave()
+  conversations.add(chatId, 'bot', instructions)
+  await whatsapp.sendText(chatId, instructions)
+}
+
 async function handleClosedManualInformationMessage({ chatId, text }) {
   if (isMenuRequest(text)) {
     await whatsapp.sendImage(chatId, menuImagePath, '')
@@ -1266,9 +1282,19 @@ function isMenuRequest(text) {
   return /\b(menu|carta|productos|precios|que tienen|que venden)\b/.test(normalized)
 }
 
+// "Quiero hacer un pedido", "puedo pedir?": el cliente esta ARRANCANDO, todavia no dijo que
+// quiere, y ahi si corresponde mandarle el instructivo y el menu.
+//
+// Antes bastaba con "puedo" y despues la palabra "pedido" en cualquier parte de la frase, y eso
+// tomaba "Puedo aumentar 2 refresquitos mas a mi pedido?" como si fuera un pedido nuevo: el
+// cliente ya estaba pidiendo y el bot le contestaba con el menu otra vez. Ahora hace falta un
+// verbo de armar el pedido (hacer/realizar/poner/tomar) o el verbo "pedir" pegado al inicio de
+// la frase; hablar de "mi pedido" para cambiarlo o preguntar por el ya no cuenta.
 function isGenericOrderStart(text) {
   const normalized = normalizeText(text)
-  return /\b(quiero|quisiera|deseo|necesito|voy a|puedo)\b[^.\n]{0,35}\b(hacer|realizar|poner|pedir|pedido)\b|\bquiero pedir\b/.test(normalized)
+  const arranca = /\b(quiero|quisiera|deseo|necesito|voy a|puedo|podria)\b[^.\n]{0,25}\b(hacer|realizar|poner|levantar|tomar)\b[^.\n]{0,15}\bpedido\b/
+  const pedir = /\b(quiero|quisiera|deseo|necesito|voy a|puedo|podria)\b[^.\n]{0,12}\bpedir\b/
+  return arranca.test(normalized) || pedir.test(normalized)
 }
 
 function isExplicitManualResetRequest(text) {
