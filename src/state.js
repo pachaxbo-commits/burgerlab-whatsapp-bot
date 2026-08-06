@@ -64,6 +64,7 @@ export class ConversationStore {
     // tu pedido ya confirmado" para su proximo pedido, que es realmente uno nuevo y separado.
     state.lastOrderId = null
     state.manualMenuInstructionsSent = false
+    state.manualMenuSent = false
     this.scheduleSave()
   }
 
@@ -138,6 +139,7 @@ function normalizeState(value) {
     contactPhone: typeof value?.contactPhone === 'string' ? value.contactPhone : '',
     lastCustomerMessage: typeof value?.lastCustomerMessage === 'string' ? value.lastCustomerMessage : '',
     manualMenuInstructionsSent: value?.manualMenuInstructionsSent === true,
+    manualMenuSent: value?.manualMenuSent === true,
     lastManualSupportAlertAt: Number(value?.lastManualSupportAlertAt) || 0,
     lastMessageAt: Number(value?.lastMessageAt) || 0,
   }

@@ -1365,21 +1365,24 @@ async function handleManualOrderEntryMessage({ chatId, text, state }) {
   const wantsToStartOrder = isGenericOrderStart(text) && !concreteOrder
   const greetingOnly = !concreteOrder && isGreetingMessage(text)
 
-  // Si el cliente PIDE el menu, se le manda siempre: es una peticion directa y repetirla es lo
-  // que espera. El saludo y el "quiero hacer un pedido" mandan el instructivo y el menu una sola
-  // vez por conversacion. Antes la imagen se enviaba fuera del candado, asi que cada "hola" o
-  // "buenas noches" de un cliente que ya estaba pidiendo le volvia a llenar el chat con el menu.
-  // La sesion se reinicia sola a los 45 minutos sin escribir, asi que quien vuelve mas tarde lo
-  // recibe de nuevo.
-  if (wantsMenu) {
-    if (!state.manualMenuInstructionsSent) await sendManualOrderInstructions({ chatId, state })
-    await whatsapp.sendImage(chatId, menuImagePath, '')
-    return
-  }
+  // A un saludo SIEMPRE se le contesta la bienvenida, aunque el cliente ya haya saludado antes en
+  // la misma conversacion. Quedarse callado ante un "buenas noches" parece que el bot esta caido,
+  // y es justo lo que reporto el dueño.
+  //
+  // La que no se repite es la IMAGEN del menu: pesa, ocupa media pantalla y era la que llenaba el
+  // chat cuando alguien que ya estaba pidiendo volvia a saludar. Se manda una vez por
+  // conversacion, y siempre que la pidan explicitamente, que ahi es justo lo que el cliente
+  // quiere. La conversacion se reinicia sola a los 45 minutos sin escribir.
+  if (wantsMenu || wantsToStartOrder || greetingOnly) {
+    // Se mira ANTES de mandar la bienvenida: enviarla marca la conversacion como atendida, y si
+    // se consultara despues, la primera vez el menu ya contaria como enviado y no saldria nunca.
+    const faltaMandarElMenu = wantsMenu || !yaRecibioElMenu(state)
 
-  if (wantsToStartOrder || greetingOnly) {
-    if (!state.manualMenuInstructionsSent) {
-      await sendManualOrderInstructions({ chatId, state })
+    await sendManualOrderInstructions({ chatId, state })
+
+    if (faltaMandarElMenu) {
+      state.manualMenuSent = true
+      conversations.scheduleSave()
       await whatsapp.sendImage(chatId, menuImagePath, '')
     }
     return
@@ -1458,6 +1461,13 @@ async function sendManualOrderInstructions({ chatId, state }) {
   conversations.scheduleSave()
   conversations.add(chatId, 'bot', instructions)
   await whatsapp.sendText(chatId, instructions)
+}
+
+// La imagen del menu ya se mando en esta conversacion? Se mira el historial ademas de la marca en
+// el estado, para que las conversaciones que ya venian en curso cuando se actualizo el bot no
+// reciban el menu una vez mas de la cuenta.
+function yaRecibioElMenu(state) {
+  return state.manualMenuSent === true || state.manualMenuInstructionsSent === true
 }
 
 async function handleClosedManualInformationMessage({ chatId, text }) {
