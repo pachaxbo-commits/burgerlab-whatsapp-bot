@@ -5,6 +5,30 @@ import { config } from './config.js'
 const settingsPath = config.settingsPath
 const legacyPickupOnlyMessage = 'Por el momento solo estamos trabajando pedidos para recojo en el restaurante. Si te parece bien, puedo registrar tu pedido para que pases a recogerlo.'
 
+export const defaultOrderTemplateMessage = `¡Hola!  🍔 Para que tu pedido de hamburguesas por WhatsApp sea más fácil y preciso, te pedimos los siguientes datos:
+
+- Nombre completo (Nombre y apellido)
+- Delivery o Recoger (En caso de delivery enviar ubicación GPS)
+- Número de Celular (Escrito)
+- Pedido (Renglon saltado, como en el ejemplo de abajo)
+
+*Ejemplo:*
+Carlos Ramirez
+Recoger
+72210742
+1 burger lab sin cebolla
+2 burger lab
+2 bbq lab dobles sin papa
+1 bbq lab doble con piña y tocino
+1 bbq lab doble con tocino
+4 cocas
+
+‼️Nota: Le pedimos realizar su pedido con este formato y revisarlo bien antes de confirmarlo.
+*POR FAVOR*
+*NO EDITAR MENSAJES,*
+*NO MANDAR AUDIOS,*
+*NO LLAMAR*`
+
 export const defaultSettings = {
   // Cuantas veces se uso el borrado de ventas. El limite es 2: una para probar el sistema y
   // otra para entregarlo limpio. Se guarda aca (no en el navegador) para que no se pueda
@@ -35,6 +59,14 @@ export const defaultSettings = {
   registeredOrderFooterMessage: 'Una vez registrado, no podremos modificar este pedido. Si necesitas cambiar o agregar algo, con gusto podemos registrarlo como un nuevo pedido.',
   deliveryPricingMessage: 'Te paso el tarifario de delivery y la ubicacion de Burger Lab para que puedas estimar el envio. El costo final puede variar por zona, clima, subida, ruta o disponibilidad del repartidor.',
   humanHelpMessage: 'Dame un momento, por favor. Voy a pedir apoyo para confirmarte eso correctamente.',
+  // Mensaje de bienvenida con el formato de pedido. Es el que mas cambia, asi que se edita desde
+  // el sistema. Si queda vacio se usa este texto.
+  orderTemplateMessage: defaultOrderTemplateMessage,
+  // Ubicacion del local que el bot manda cuando se la piden. Vacio = se usa la de las variables
+  // de entorno, que es como venia funcionando.
+  restaurantLatitude: '',
+  restaurantLongitude: '',
+  restaurantAddress: '',
   personality: config.personality,
 }
 
@@ -99,7 +131,25 @@ function normalizeSettings(value) {
         : defaultSettings.registeredOrderFooterMessage,
     autoRepliesEnabled: value?.autoRepliesEnabled !== false,
     manualOrderEntryMode: value?.manualOrderEntryMode !== false,
+    // Un mensaje vacio dejaria al cliente sin saber como pedir, asi que se vuelve al texto por
+    // defecto. Borrar el campo en el sistema es la forma de restaurarlo.
+    orderTemplateMessage:
+      typeof value?.orderTemplateMessage === 'string' && value.orderTemplateMessage.trim()
+        ? value.orderTemplateMessage.trim()
+        : defaultOrderTemplateMessage,
+    restaurantLatitude: normalizeCoordinate(value?.restaurantLatitude),
+    restaurantLongitude: normalizeCoordinate(value?.restaurantLongitude),
+    restaurantAddress: typeof value?.restaurantAddress === 'string' ? value.restaurantAddress.trim() : '',
   }
+}
+
+// Las coordenadas se guardan como texto para poder distinguir "sin configurar" (vacio) de un cero
+// legitimo. Cualquier cosa que no sea un numero valido se descarta y el bot sigue usando la
+// ubicacion de las variables de entorno.
+function normalizeCoordinate(value) {
+  if (value === null || value === undefined || value === '') return ''
+  const numero = Number(value)
+  return Number.isFinite(numero) ? String(numero) : ''
 }
 
 function pickAllowedSettings(value) {

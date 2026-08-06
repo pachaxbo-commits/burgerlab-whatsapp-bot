@@ -4,7 +4,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { config, assertRequiredConfig, getRestaurantLocation } from './config.js'
 import { ConversationStore } from './state.js'
-import { getSettings, loadSettings, registerSalesReset, updateSettings } from './settings.js'
+import { defaultOrderTemplateMessage, getSettings, loadSettings, registerSalesReset, updateSettings } from './settings.js'
 import {
   getCatalog,
   createWhatsappOrder,
@@ -36,9 +36,47 @@ assertRequiredConfig()
 await loadSettings()
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const menuImagePath = path.resolve(__dirname, '..', 'assets', 'menu-burger-lab.png')
-const deliveryTariffImagePath = path.resolve(__dirname, '..', 'assets', 'delivery-tarifario.png')
-const paymentQrImagePath = path.resolve(__dirname, '..', 'assets', 'qr-pago-burger-lab.png')
+
+// Las imagenes que manda el bot se pueden cambiar desde el sistema. Para no tocar ni una sola
+// linea de las que ya funcionan, las rutas siguen siendo constantes: apuntan a DATA_DIR, y al
+// arrancar se copia ahi la imagen del repositorio si todavia no hay ninguna. Subir una nueva
+// simplemente pisa ese archivo. Si DATA_DIR no se puede escribir, la ruta vuelve a ser la del
+// repositorio y todo sigue como antes, solo que sin poder editarla.
+const assetsRepoDir = path.resolve(__dirname, '..', 'assets')
+const assetsDataDir = path.join(config.dataDir, 'assets')
+
+export const editableAssets = {
+  menu: { file: 'menu-burger-lab.png', label: 'Imagen del menu' },
+  tarifario: { file: 'delivery-tarifario.png', label: 'Tarifario de delivery' },
+  qrPago: { file: 'qr-pago-burger-lab.png', label: 'QR de pago' },
+}
+
+async function prepararImagenesEditables() {
+  const rutas = {}
+  for (const [clave, { file }] of Object.entries(editableAssets)) {
+    const rutaRepo = path.join(assetsRepoDir, file)
+    const rutaDatos = path.join(assetsDataDir, file)
+    try {
+      await fs.mkdir(assetsDataDir, { recursive: true })
+      await fs.access(rutaDatos)
+      rutas[clave] = rutaDatos
+    } catch {
+      try {
+        await fs.copyFile(rutaRepo, rutaDatos)
+        rutas[clave] = rutaDatos
+      } catch (error) {
+        console.warn(`No se pudo preparar ${file} en DATA_DIR, se usa la del repositorio:`, error.message)
+        rutas[clave] = rutaRepo
+      }
+    }
+  }
+  return rutas
+}
+
+const rutasImagenes = await prepararImagenesEditables()
+const menuImagePath = rutasImagenes.menu
+const deliveryTariffImagePath = rutasImagenes.tarifario
+const paymentQrImagePath = rutasImagenes.qrPago
 const botVersion = process.env.RAILWAY_GIT_COMMIT_SHA?.slice(0, 7) || 'local'
 
 const SESSION_GAP_MS = 45 * 60 * 1000
@@ -534,12 +572,12 @@ async function handleIncomingMessage({ chatId, text, displayName = '' }) {
         // Si ademas preguntaba donde quedamos, le mandamos el pin. Esto no intercepta el mensaje:
         // la IA ya decidio que era una pregunta y ya la contesto, esto solo agrega la ubicacion.
         if (isRestaurantLocationRequest(text)) {
-          const restaurantLocation = getRestaurantLocation()
+          const restaurantLocation = resolveRestaurantLocation()
           await whatsapp.sendLocation(chatId, {
             latitude: restaurantLocation.latitude,
             longitude: restaurantLocation.longitude,
             name: config.businessName,
-            address: config.restaurantAddress,
+            address: resolveRestaurantAddress(),
           })
         }
         return
@@ -640,7 +678,9 @@ async function refreshTemporarySettings() {
 }
 
 const app = express()
-app.use(express.json())
+// El limite por defecto de express son 100 kb y una foto del menu en base64 pasa facil de 1 MB:
+// sin esto, guardar una imagen nueva fallaba con "request entity too large".
+app.use(express.json({ limit: '12mb' }))
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', process.env.BOT_CORS_ORIGIN || '*')
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-bot-token')
@@ -762,6 +802,115 @@ app.post('/admin/reset-sales', requireToken, async (_req, res) => {
 app.get('/admin/reset-sales/status', requireToken, (_req, res) => {
   const usados = Number(getSettings().salesResetsUsed || 0)
   res.json({ usados, restantes: Math.max(0, MAX_BORRADOS_DE_VENTAS - usados), maximo: MAX_BORRADOS_DE_VENTAS })
+})
+
+// --- Imagenes que manda el bot (menu, tarifario y QR de pago) ---
+//
+// Se guardan en DATA_DIR con el mismo nombre que usa el bot para enviarlas, asi que subir una
+// nueva no cambia ninguna ruta ni ningun flujo: el bot sigue leyendo el mismo archivo.
+
+const MAX_BYTES_IMAGEN = 8 * 1024 * 1024
+
+function rutaImagenEditable(clave) {
+  if (!Object.prototype.hasOwnProperty.call(editableAssets, clave)) return ''
+  return rutasImagenes[clave] || ''
+}
+
+async function leerImagenComoDataUrl(ruta) {
+  const contenido = await fs.readFile(ruta)
+  const tipo = contenido.slice(0, 3).toString('hex') === 'ffd8ff' ? 'image/jpeg' : 'image/png'
+  return `data:${tipo};base64,${contenido.toString('base64')}`
+}
+
+app.get('/admin/assets', requireToken, async (_req, res) => {
+  const imagenes = []
+  for (const [clave, { label }] of Object.entries(editableAssets)) {
+    const ruta = rutaImagenEditable(clave)
+    let bytes = 0
+    let actualizada = ''
+    try {
+      const info = await fs.stat(ruta)
+      bytes = info.size
+      actualizada = info.mtime.toISOString()
+    } catch {
+      // Sin archivo todavia: se informa igual para que el panel lo muestre como vacio.
+    }
+    imagenes.push({ clave, label, bytes, actualizada, editable: ruta.startsWith(assetsDataDir) })
+  }
+  res.json({ ok: true, imagenes })
+})
+
+app.get('/admin/assets/:clave', requireToken, async (req, res) => {
+  const ruta = rutaImagenEditable(req.params.clave)
+  if (!ruta) {
+    res.status(404).json({ ok: false, error: 'Esa imagen no existe.' })
+    return
+  }
+  try {
+    res.json({ ok: true, dataUrl: await leerImagenComoDataUrl(ruta) })
+  } catch {
+    res.status(404).json({ ok: false, error: 'Todavia no hay una imagen guardada.' })
+  }
+})
+
+app.post('/admin/assets/:clave', requireToken, async (req, res) => {
+  const clave = req.params.clave
+  const ruta = rutaImagenEditable(clave)
+  if (!ruta) {
+    res.status(404).json({ ok: false, error: 'Esa imagen no existe.' })
+    return
+  }
+  if (!ruta.startsWith(assetsDataDir)) {
+    res.status(409).json({ ok: false, error: 'El servidor no tiene una carpeta de datos donde guardar imagenes.' })
+    return
+  }
+
+  const dataUrl = String(req.body?.dataUrl || '')
+  const partes = /^data:image\/(png|jpe?g);base64,(.+)$/i.exec(dataUrl)
+  if (!partes) {
+    res.status(400).json({ ok: false, error: 'La imagen debe ser PNG o JPG.' })
+    return
+  }
+
+  const contenido = Buffer.from(partes[2], 'base64')
+  if (!contenido.length) {
+    res.status(400).json({ ok: false, error: 'La imagen llego vacia.' })
+    return
+  }
+  if (contenido.length > MAX_BYTES_IMAGEN) {
+    res.status(413).json({ ok: false, error: 'La imagen pesa mas de 8 MB. Usa una mas liviana.' })
+    return
+  }
+
+  // Se escribe primero a un archivo temporal y recien despues se reemplaza: si la subida se corta
+  // a la mitad, el bot sigue teniendo la imagen anterior completa en vez de una rota.
+  const temporal = `${ruta}.subiendo`
+  try {
+    await fs.writeFile(temporal, contenido)
+    await fs.rename(temporal, ruta)
+    res.json({ ok: true, bytes: contenido.length })
+  } catch (error) {
+    await fs.rm(temporal, { force: true }).catch(() => undefined)
+    console.error('No se pudo guardar la imagen:', error)
+    res.status(500).json({ ok: false, error: 'No se pudo guardar la imagen.' })
+  }
+})
+
+/** Vuelve a la imagen original que viene con el bot. */
+app.post('/admin/assets/:clave/reset', requireToken, async (req, res) => {
+  const clave = req.params.clave
+  const ruta = rutaImagenEditable(clave)
+  if (!ruta || !ruta.startsWith(assetsDataDir)) {
+    res.status(404).json({ ok: false, error: 'Esa imagen no se puede restaurar.' })
+    return
+  }
+  try {
+    await fs.copyFile(path.join(assetsRepoDir, editableAssets[clave].file), ruta)
+    res.json({ ok: true })
+  } catch (error) {
+    console.error('No se pudo restaurar la imagen:', error)
+    res.status(500).json({ ok: false, error: 'No se pudo restaurar la imagen original.' })
+  }
 })
 
 app.get('/whatsapp/groups', requireToken, async (_req, res) => {
@@ -1108,12 +1257,12 @@ async function handleManualOrderEntryMessage({ chatId, text, state }) {
   }
 
   if (isRestaurantLocationRequest(text) || isGeneralRestaurantLocationQuestion(text)) {
-    const restaurantLocation = getRestaurantLocation()
+    const restaurantLocation = resolveRestaurantLocation()
     await whatsapp.sendLocation(chatId, {
       latitude: restaurantLocation.latitude,
       longitude: restaurantLocation.longitude,
       name: config.businessName,
-      address: config.restaurantAddress,
+      address: resolveRestaurantAddress(),
     })
     return
   }
@@ -1264,12 +1413,12 @@ async function handleClosedManualInformationMessage({ chatId, text }) {
   }
 
   if (isRestaurantLocationRequest(text) || isGeneralRestaurantLocationQuestion(text)) {
-    const restaurantLocation = getRestaurantLocation()
+    const restaurantLocation = resolveRestaurantLocation()
     await whatsapp.sendLocation(chatId, {
       latitude: restaurantLocation.latitude,
       longitude: restaurantLocation.longitude,
       name: config.businessName,
-      address: config.restaurantAddress,
+      address: resolveRestaurantAddress(),
     })
     return true
   }
@@ -1368,7 +1517,7 @@ function formatHour(hour) {
 
 async function sendDeliveryPricingInfo(chatId) {
   const caption = getSettings().deliveryPricingMessage
-  const restaurantLocation = getRestaurantLocation()
+  const restaurantLocation = resolveRestaurantLocation()
 
   conversations.add(chatId, 'bot', caption)
   await whatsapp.sendImage(chatId, deliveryTariffImagePath, caption)
@@ -1376,7 +1525,7 @@ async function sendDeliveryPricingInfo(chatId) {
     latitude: restaurantLocation.latitude,
     longitude: restaurantLocation.longitude,
     name: config.businessName,
-    address: config.restaurantAddress,
+    address: resolveRestaurantAddress(),
   })
 }
 
@@ -1937,36 +2086,22 @@ function shouldProceedWithQrWhileWaitingLocation() {
 
 const ORDER_FORMAT_REDIRECT_MESSAGE = 'Claro, por favor llenar los datos según formato (como en el ejemplo)'
 
+// El texto sale de la configuracion para que el dueño lo pueda cambiar desde el sistema sin
+// tocar codigo. Lo unico que el bot sigue ajustando solo es la linea del delivery cuando esta
+// activado el modo solo recojo: dejarla diciendo "Delivery o Recoger" mientras no hay delivery
+// hace que el cliente pida algo que no se le puede dar.
 function buildOrderTemplateMessage() {
-  const pickupOnly = getSettings().pickupOnlyMode
-  const deliveryLine = pickupOnly
-    ? `- Recojo en el local (${getSettings().pickupOnlyMessage})`
-    : `- Delivery o Recoger (En caso de delivery enviar ubicación GPS)`
+  const settings = getSettings()
+  const plantilla = settings.orderTemplateMessage || defaultOrderTemplateMessage
+  if (!settings.pickupOnlyMode) return plantilla
 
-  return `¡Hola! 🍔 Para que tu pedido de hamburguesas por WhatsApp sea más fácil y preciso, te pedimos los siguientes datos:
+  const lineaRecojo = `- Solo recojo en el local (${settings.pickupOnlyMessage})`
+  const lineas = plantilla.split('\n')
+  const indice = lineas.findIndex((linea) => /^\s*[-•*]?\s*delivery\b/i.test(linea))
+  if (indice === -1) return `${plantilla}\n\n${lineaRecojo}`
 
-- Nombre o apellido
-${deliveryLine}
-- Número de Celular
-- Pedido (Renglón saltado, como en el ejemplo de abajo)
-- Si deseas pagar con QR, indícalo en tu mensaje (si no se especifica, el pedido se registra en efectivo)
-
-*Ejemplo:*
-Ramirez
-Recoger
-72210742
-1 burger lab sin cebolla
-2 burger lab
-2 bbq lab dobles sin papa
-1 bbq lab doble con piña y tocino
-1 bbq lab doble con tocino
-4 cocas
-
-‼️Nota: Le pedimos realizar su pedido con este formato y revisarlo bien antes de confirmarlo.
-*POR FAVOR*
-*NO EDITAR MENSAJES,*
-*NO MANDAR AUDIOS,*
-*NO LLAMAR*`
+  lineas[indice] = lineaRecojo
+  return lineas.join('\n')
 }
 
 // El formato ya se le mando en esta conversacion? El mensaje corto dice "como en el ejemplo", asi
@@ -2107,6 +2242,31 @@ function requireToken(req, res, next) {
     return
   }
   next()
+}
+
+// Ubicacion del local. Manda la que el dueño puso en el sistema; si esta vacia o no es un punto
+// creible se usa la de siempre (variables de entorno y, si esas fallan, el pin verificado). Asi
+// una coordenada mal pegada nunca deja al bot mandando un pin en medio del oceano.
+function resolveRestaurantLocation() {
+  const settings = getSettings()
+  const latitude = Number(settings.restaurantLatitude)
+  const longitude = Number(settings.restaurantLongitude)
+  const esCreible = Number.isFinite(latitude)
+    && Number.isFinite(longitude)
+    && latitude >= -90
+    && latitude <= 90
+    && longitude >= -180
+    && longitude <= 180
+    && !(latitude === 0 && longitude === 0)
+
+  if (settings.restaurantLatitude !== '' && settings.restaurantLongitude !== '' && esCreible) {
+    return { latitude, longitude }
+  }
+  return getRestaurantLocation()
+}
+
+function resolveRestaurantAddress() {
+  return getSettings().restaurantAddress || config.restaurantAddress
 }
 
 function phoneToChatId(phone) {
